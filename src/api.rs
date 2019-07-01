@@ -1148,6 +1148,22 @@ impl<T: Pixel> ContextInner<T> {
       });
 
       println!("Computed lookahead data for input_frameno = {}", input_frameno);
+
+      // let data = self.lookahead_data.get(&input_frameno).unwrap();
+      // println!("{:?}", data);
+
+      // let plane = &data.input_qres;
+      // image::GrayImage::from_fn(
+      //   plane.cfg.width as u32,
+      //   plane.cfg.height as u32,
+      //   |x, y| image::Luma([plane.p(x as usize, y as usize).as_()])
+      // ).save(format!("{}-qres.png", input_frameno)).unwrap();
+      // let plane = &data.input_hres;
+      // image::GrayImage::from_fn(
+      //   plane.cfg.width as u32,
+      //   plane.cfg.height as u32,
+      //   |x, y| image::Luma([plane.p(x as usize, y as usize).as_()])
+      // ).save(format!("{}-hres.png", input_frameno)).unwrap();
     }
   }
 
