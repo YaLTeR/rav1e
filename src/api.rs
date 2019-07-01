@@ -10,10 +10,14 @@
 use arg_enum_proc_macro::ArgEnum;
 use bitstream_io::*;
 use num_derive::*;
+use rayon::prelude::*;
 use serde_derive::{Serialize, Deserialize};
 
+use crate::context::{FrameBlocks, SuperBlockOffset};
 use crate::encoder::*;
-use crate::frame::Frame;
+use crate::frame::{Frame, Plane};
+use crate::mc::MotionVector;
+use crate::me::MotionEstimation;
 use crate::metrics::calculate_frame_psnr;
 use crate::partition::*;
 use crate::rate::RCState;
@@ -29,6 +33,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use crate::me::FrameMotionVectors;
 
 const LOOKAHEAD_FRAMES: u64 = 10;
 
@@ -667,6 +672,8 @@ pub(crate) struct ContextInner<T: Pixel> {
   rc_state: RCState,
   maybe_prev_log_base_q: Option<i64>,
   pub first_pass_data: FirstPassData,
+  /// Maps *input_frameno* to lookahead data.
+  lookahead_data: BTreeMap<u64, LookaheadData<T>>,
 }
 
 pub struct Context<T: Pixel> {
@@ -870,6 +877,7 @@ impl<T: Pixel> ContextInner<T> {
         ),
         maybe_prev_log_base_q: None,
         first_pass_data: FirstPassData { frames: Vec::new() },
+        lookahead_data: BTreeMap::new(),
     }
   }
 
@@ -1016,6 +1024,133 @@ impl<T: Pixel> ContextInner<T> {
     self.limit != 0 && self.frames_processed == self.limit
   }
 
+  fn compute_lookahead_data(&mut self) {
+    assert!(!self.inter_cfg.reorder); // TODO
+
+    for &input_frameno in self.frame_q.keys() {
+      // TODO: do we ever need to recompute existing lookahead data?
+      //       Can the reference frames change? If so then we do need to recompute.
+      if self.lookahead_data.contains_key(&input_frameno) {
+        continue;
+      }
+
+      let output_frameno = input_frameno; // TODO
+
+      // TODO: probably make the code that fills in frame_invariants do so right away and not in
+      //       subgops? So that we have all frame_invariants right away.
+      if !self.frame_invariants.contains_key(&output_frameno) {
+        continue;
+      }
+
+      let frame = self.frame_q.get(&input_frameno).unwrap().as_ref().unwrap();
+      let fi = self.frame_invariants.get(&output_frameno).unwrap();
+
+      let mut fs = FrameState::new_with_frame(fi, frame.clone());
+
+      // Compute downsampled versions of the frames.
+      fs.input_hres.downsample_from(&frame.planes[0]);
+      fs.input_hres.pad(fi.width, fi.height);
+      fs.input_qres.downsample_from(&fs.input_hres);
+      fs.input_qres.pad(fi.width, fi.height);
+
+      // Compute the motion vectors.
+      // TODO: this currently doesn't compute correct data as it searches for motion vectors from
+      //       fi.rec_buffer, which we don't fill up. We need to fill those up with original frames.
+      let mut blocks = FrameBlocks::new(fi.w_in_b, fi.h_in_b);
+
+      fi.tiling
+        .tile_iter_mut(&mut fs, &mut blocks)
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .for_each(|mut ctx| {
+          let ts = &mut ctx.ts;
+
+          // Compute the quarter-resolution motion vectors.
+          let tile_pmvs = build_coarse_pmvs(fi, ts);
+
+          // Compute the half-resolution motion vectors.
+          let estimate_motion_ss2 = if fi.config.speed_settings.diamond_me {
+            crate::me::DiamondSearch::estimate_motion_ss2
+          } else {
+            crate::me::FullSearch::estimate_motion_ss2
+          };
+
+          for sby in 0..ts.sb_height {
+            for sbx in 0..ts.sb_width {
+              let tile_sbo = SuperBlockOffset { x: sbx, y: sby };
+
+              let mut pmvs: [[Option<MotionVector>; REF_FRAMES]; 5] = [[None; REF_FRAMES]; 5];
+              if ts.mi_width >= 8 && ts.mi_height >= 8 {
+                for i in 0..INTER_REFS_PER_FRAME {
+                  let r = fi.ref_frames[i] as usize;
+                  if pmvs[0][r].is_none() {
+                    pmvs[0][r] = tile_pmvs[sby * ts.sb_width + sbx][r];
+                    if let Some(pmv) = pmvs[0][r] {
+                      let pmv_w = if sbx > 0 {
+                        tile_pmvs[sby * ts.sb_width + sbx - 1][r]
+                      } else {
+                        None
+                      };
+                      let pmv_e = if sbx < ts.sb_width - 1 {
+                        tile_pmvs[sby * ts.sb_width + sbx + 1][r]
+                      } else {
+                        None
+                      };
+                      let pmv_n = if sby > 0 {
+                        tile_pmvs[sby * ts.sb_width + sbx - ts.sb_width][r]
+                      } else {
+                        None
+                      };
+                      let pmv_s = if sby < ts.sb_height - 1 {
+                        tile_pmvs[sby * ts.sb_width + sbx + ts.sb_width][r]
+                      } else {
+                        None
+                      };
+
+                      assert!(!fi.sequence.use_128x128_superblock);
+                      pmvs[1][r] = estimate_motion_ss2(
+                        fi, ts, BlockSize::BLOCK_32X32, r, tile_sbo.block_offset(0, 0), &[Some(pmv), pmv_w, pmv_n], i
+                      );
+                      pmvs[2][r] = estimate_motion_ss2(
+                        fi, ts, BlockSize::BLOCK_32X32, r, tile_sbo.block_offset(8, 0), &[Some(pmv), pmv_e, pmv_n], i
+                      );
+                      pmvs[3][r] = estimate_motion_ss2(
+                        fi, ts, BlockSize::BLOCK_32X32, r, tile_sbo.block_offset(0, 8), &[Some(pmv), pmv_w, pmv_s], i
+                      );
+                      pmvs[4][r] = estimate_motion_ss2(
+                        fi, ts, BlockSize::BLOCK_32X32, r, tile_sbo.block_offset(8, 8), &[Some(pmv), pmv_e, pmv_s], i
+                      );
+
+                      if let Some(mv) = pmvs[1][r] {
+                        save_block_motion(ts, BlockSize::BLOCK_32X32, tile_sbo.block_offset(0, 0), i, mv);
+                      }
+                      if let Some(mv) = pmvs[2][r] {
+                        save_block_motion(ts, BlockSize::BLOCK_32X32, tile_sbo.block_offset(8, 0), i, mv);
+                      }
+                      if let Some(mv) = pmvs[3][r] {
+                        save_block_motion(ts, BlockSize::BLOCK_32X32, tile_sbo.block_offset(0, 8), i, mv);
+                      }
+                      if let Some(mv) = pmvs[4][r] {
+                        save_block_motion(ts, BlockSize::BLOCK_32X32, tile_sbo.block_offset(8, 8), i, mv);
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        });
+
+      self.lookahead_data.insert(input_frameno, LookaheadData {
+        input_hres: fs.input_hres,
+        input_qres: fs.input_qres,
+        motion_vectors: fs.frame_mvs,
+      });
+
+      println!("Computed lookahead data for input_frameno = {}", input_frameno);
+    }
+  }
+
   pub fn receive_packet(&mut self) -> Result<Packet<T>, EncoderStatus> {
     if self.done_processing() {
       return Err(EncoderStatus::LimitReached);
@@ -1033,6 +1168,8 @@ impl<T: Pixel> ContextInner<T> {
      self.frame_invariants[&self.output_frameno].input_frameno) {
       return Err(EncoderStatus::LimitReached);
     }
+
+    self.compute_lookahead_data();
 
     let cur_output_frameno = self.output_frameno;
 
@@ -1167,11 +1304,13 @@ impl<T: Pixel> ContextInner<T> {
   }
 
   fn garbage_collect(&mut self, cur_input_frameno: u64) {
+    println!("garbage_collect({})", cur_input_frameno);
     if cur_input_frameno == 0 {
       return;
     }
     for i in 0..cur_input_frameno {
       self.frame_q.remove(&i);
+      self.lookahead_data.remove(&i);
     }
     if self.output_frameno < 2 {
       return;
@@ -1358,6 +1497,17 @@ impl<T: Pixel> From<&FrameInvariants<T>> for FirstPassFrame {
       frame_type: fi.frame_type,
     }
   }
+}
+
+/// Data computed for frames during lookahead.
+#[derive(Debug)]
+struct LookaheadData<T: Pixel> {
+  /// Half-resolution version of input luma.
+  input_hres: Plane<T>,
+  /// Quarter-resolution version of input luma.
+  input_qres: Plane<T>,
+  /// Motion vectors.
+  motion_vectors: Vec<FrameMotionVectors>,
 }
 
 #[cfg(test)]
