@@ -1217,6 +1217,20 @@ impl<T: Pixel> ContextInner<T> {
       });
 
       println!("Computed first pass lookahead data for input_frameno = {} (frame type = {})", input_frameno, fi.frame_type);
+
+//      let data = self.lookahead_data_first_pass.get(&input_frameno).unwrap();
+//      let plane = &data.input_qres;
+//      image::GrayImage::from_fn(
+//        plane.cfg.width as u32,
+//        plane.cfg.height as u32,
+//        |x, y| image::Luma([plane.p(x as usize, y as usize).as_()])
+//      ).save(format!("{}-qres.png", input_frameno)).unwrap();
+//      let plane = &data.input_hres;
+//      image::GrayImage::from_fn(
+//        plane.cfg.width as u32,
+//        plane.cfg.height as u32,
+//        |x, y| image::Luma([plane.p(x as usize, y as usize).as_()])
+//      ).save(format!("{}-hres.png", input_frameno)).unwrap();
     }
 
     // Second pass through the input frames. Compute motion vectors.
@@ -1327,23 +1341,22 @@ impl<T: Pixel> ContextInner<T> {
         motion_vectors: fs.frame_mvs,
       });
 
-      println!("Computed second pass lookahead data for input_frameno = {}", input_frameno);
+      println!("Computed second pass lookahead data for output_frameno = {}", output_frameno);
 
-      // let data = self.lookahead_data.get(&input_frameno).unwrap();
-      // println!("{:?}", data);
-
-      // let plane = &data.input_qres;
-      // image::GrayImage::from_fn(
-      //   plane.cfg.width as u32,
-      //   plane.cfg.height as u32,
-      //   |x, y| image::Luma([plane.p(x as usize, y as usize).as_()])
-      // ).save(format!("{}-qres.png", input_frameno)).unwrap();
-      // let plane = &data.input_hres;
-      // image::GrayImage::from_fn(
-      //   plane.cfg.width as u32,
-      //   plane.cfg.height as u32,
-      //   |x, y| image::Luma([plane.p(x as usize, y as usize).as_()])
-      // ).save(format!("{}-hres.png", input_frameno)).unwrap();
+//      let data = self.lookahead_data_second_pass.get(&output_frameno).unwrap();
+//      let mvs = &data.motion_vectors[LAST_FRAME.to_index()];
+//      use byteorder::{WriteBytesExt, NativeEndian};
+//      let mut buf = vec![];
+//      buf.write_u64::<NativeEndian>(mvs.rows as u64).unwrap();
+//      buf.write_u64::<NativeEndian>(mvs.cols as u64).unwrap();
+//      for y in 0..mvs.rows {
+//        for x in 0..mvs.cols {
+//          let mv = mvs[y][x];
+//          buf.write_i16::<NativeEndian>(mv.row).unwrap();
+//          buf.write_i16::<NativeEndian>(mv.col).unwrap();
+//        }
+//      }
+//      ::std::fs::write(format!("{}-mvs.bin", output_frameno), buf).unwrap();
     }
   }
 
