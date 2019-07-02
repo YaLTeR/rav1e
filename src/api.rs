@@ -13,7 +13,7 @@ use num_derive::*;
 use rayon::prelude::*;
 use serde_derive::{Serialize, Deserialize};
 
-use crate::context::{FrameBlocks, SuperBlockOffset};
+use crate::context::{FrameBlocks, SuperBlockOffset, CDFContext};
 use crate::encoder::*;
 use crate::frame::{Frame, Plane};
 use crate::mc::MotionVector;
@@ -34,6 +34,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use crate::partition::RefType::LAST_FRAME;
 
 const LOOKAHEAD_FRAMES: u64 = 10;
 
@@ -1169,8 +1170,37 @@ impl<T: Pixel> ContextInner<T> {
           keyframe_detector.set_last_frame(frame, (input_frameno - 1) as usize);
         }
       }
-      let (fi, _) = self.build_frame_properties_lookahead(&mut keyframe_detector, output_frameno).unwrap();
-      // TODO: set correct reference frames.
+
+      let (mut fi, _) = self.build_frame_properties_lookahead(&mut keyframe_detector, output_frameno).unwrap();
+
+      // Set the reference frames.
+      if input_frameno > 0 {
+        if let Some(last_frame) = self.frame_q.get(&(input_frameno - 1)) {
+          // TODO: other reference frames (B-frames need altref I believe).
+          // TODO: get rid of cloning.
+          let last_frame = last_frame.as_ref().unwrap();
+          let LookaheadDataFirstPass { input_hres, input_qres } = self.lookahead_data_first_pass.get(&(input_frameno - 1)).unwrap();
+
+          let reference_frame = ReferenceFrame {
+            order_hint: 0,                    // Not needed.
+            frame: (**last_frame).clone(),    // Needed for full-resolution MV search.
+            input_hres: input_hres.clone(),   // Needed for half-resolution MV search.
+            input_qres: input_qres.clone(),   // Needed for quarter-resolution MV search.
+            cdfs: CDFContext::new(0),         // Not needed.
+            frame_mvs: {                      // TODO: copy this from lookahead_data_second_pass to aid in MV search.
+              let mut vec = Vec::with_capacity(REF_FRAMES);
+              for _ in 0..REF_FRAMES {
+                vec.push(FrameMotionVectors::new(fi.w_in_b, fi.h_in_b));
+              }
+              vec
+            },
+          };
+
+          fi.rec_buffer.frames[fi.ref_frames[LAST_FRAME.to_index()] as usize] = Some(Arc::new(reference_frame));
+          println!("Set reference frame for output_frameno = {}", output_frameno);
+        }
+      }
+
       self.lookahead_frame_invariants.insert(output_frameno, fi);
       let fi = self.lookahead_frame_invariants.get(&output_frameno).unwrap();
 
@@ -1208,8 +1238,6 @@ impl<T: Pixel> ContextInner<T> {
       fs.input_qres = input_qres.clone();
 
       // Compute the motion vectors.
-      // TODO: this currently doesn't compute correct data as it searches for motion vectors from
-      //       fi.rec_buffer, which we don't fill up. We need to fill those up with original frames.
       let mut blocks = FrameBlocks::new(fi.w_in_b, fi.h_in_b);
 
       fi.tiling
