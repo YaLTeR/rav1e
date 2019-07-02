@@ -29,6 +29,7 @@ use crate::scenechange::SceneChangeDetector;
 use crate::util::Pixel;
 
 use std::{cmp, fmt, io};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::collections::BTreeSet;
@@ -667,7 +668,7 @@ pub(crate) struct ContextInner<T: Pixel> {
   packet_data: Vec<u8>,
   gop_output_frameno_start: u64,
   pub(crate) gop_input_frameno_start: u64,
-  keyframe_detector: SceneChangeDetector<T>,
+  keyframe_detector: RefCell<SceneChangeDetector<T>>,
   pub(crate) config: EncoderConfig,
   rc_state: RCState,
   maybe_prev_log_base_q: Option<i64>,
@@ -862,7 +863,7 @@ impl<T: Pixel> ContextInner<T> {
         packet_data,
         gop_output_frameno_start: 0,
         gop_input_frameno_start: 0,
-        keyframe_detector: SceneChangeDetector::new(enc.bit_depth),
+        keyframe_detector: RefCell::new(SceneChangeDetector::new(enc.bit_depth)),
         config: enc.clone(),
         rc_state: RCState::new(
           enc.width as i32,
@@ -989,7 +990,7 @@ impl<T: Pixel> ContextInner<T> {
     }
 
     // Now that we know the input_frameno, look up the correct frame type
-    let frame_type = self.determine_frame_type(fi.input_frameno);
+    let frame_type = self.determine_frame_type(&mut *self.keyframe_detector.borrow_mut(), fi.input_frameno);
     if frame_type == FrameType::KEY {
       self.gop_output_frameno_start = output_frameno;
       self.gop_input_frameno_start = fi.input_frameno;
@@ -1336,7 +1337,7 @@ impl<T: Pixel> ContextInner<T> {
     }
   }
 
-  fn determine_frame_type(&mut self, input_frameno: u64) -> FrameType {
+  fn determine_frame_type(&self, keyframe_detector: &mut SceneChangeDetector<T>, input_frameno: u64) -> FrameType {
     if input_frameno == 0 {
       return FrameType::KEY;
     }
@@ -1360,14 +1361,14 @@ impl<T: Pixel> ContextInner<T> {
       let distance = input_frameno - prev_keyframe_input_frameno;
       if distance < self.config.min_key_frame_interval {
         if distance + 1 == self.config.min_key_frame_interval {
-          self.keyframe_detector.set_last_frame(frame, input_frameno as usize);
+          keyframe_detector.set_last_frame(frame, input_frameno as usize);
         }
         return FrameType::INTER;
       }
       if distance >= self.config.max_key_frame_interval {
         return FrameType::KEY;
       }
-      if self.keyframe_detector.detect_scene_change(frame,
+      if keyframe_detector.detect_scene_change(frame,
        input_frameno as usize) {
         return FrameType::KEY;
       }
