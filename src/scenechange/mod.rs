@@ -15,6 +15,7 @@ use std::sync::Arc;
 /// Detects fast cuts using changes in colour and intensity between frames.
 /// Since the difference between frames is used, only fast cuts are detected
 /// with this method. This is probably fine for the purpose of choosing keyframes.
+#[derive(Clone)]
 pub struct SceneChangeDetector<T: Pixel> {
   /// Minimum average difference between YUV deltas that will trigger a scene change.
   threshold: u8,
