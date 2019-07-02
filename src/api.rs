@@ -17,7 +17,7 @@ use crate::context::{FrameBlocks, SuperBlockOffset};
 use crate::encoder::*;
 use crate::frame::{Frame, Plane};
 use crate::mc::MotionVector;
-use crate::me::MotionEstimation;
+use crate::me::{MotionEstimation, FrameMotionVectors};
 use crate::metrics::calculate_frame_psnr;
 use crate::partition::*;
 use crate::rate::RCState;
@@ -34,7 +34,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use crate::me::FrameMotionVectors;
 
 const LOOKAHEAD_FRAMES: u64 = 10;
 
@@ -673,8 +672,16 @@ pub(crate) struct ContextInner<T: Pixel> {
   rc_state: RCState,
   maybe_prev_log_base_q: Option<i64>,
   pub first_pass_data: FirstPassData,
-  /// Maps *input_frameno* to lookahead data.
-  lookahead_data: BTreeMap<u64, LookaheadData<T>>,
+
+  /// Maps *input_frameno* to first pass lookahead data.
+  lookahead_data_first_pass: BTreeMap<u64, LookaheadDataFirstPass<T>>,
+  /// Maps *output_frameno* to frame invariants.
+  lookahead_frame_invariants: BTreeMap<u64, FrameInvariants<T>>,
+  /// Maps *output_frameno* to second pass lookahead data.
+  lookahead_data_second_pass: BTreeMap<u64, LookaheadDataSecondPass>,
+  lookahead_gop_output_frameno_start: u64,
+  lookahead_gop_input_frameno_start: u64,
+  lookahead_keyframes: BTreeSet<u64>,
 }
 
 pub struct Context<T: Pixel> {
@@ -878,7 +885,12 @@ impl<T: Pixel> ContextInner<T> {
         ),
         maybe_prev_log_base_q: None,
         first_pass_data: FirstPassData { frames: Vec::new() },
-        lookahead_data: BTreeMap::new(),
+        lookahead_data_first_pass: BTreeMap::new(),
+        lookahead_frame_invariants: BTreeMap::new(),
+        lookahead_data_second_pass: BTreeMap::new(),
+        lookahead_gop_output_frameno_start: 0,
+        lookahead_gop_input_frameno_start: 0,
+        lookahead_keyframes: BTreeSet::new(),
     }
   }
 
@@ -927,9 +939,28 @@ impl<T: Pixel> ContextInner<T> {
     cmp::min(next_detected.unwrap(), next_limit)
   }
 
+  fn next_keyframe_input_frameno_lookahead(&self,
+                                           gop_input_frameno_start: u64, ignore_limit: bool) -> u64 {
+    let next_detected = self.lookahead_frame_invariants.values()
+      .find(|fi| {
+        fi.frame_type == FrameType::KEY
+          && fi.input_frameno > gop_input_frameno_start
+      }).map(|fi| fi.input_frameno);
+    let mut next_limit =
+      gop_input_frameno_start + self.config.max_key_frame_interval;
+    if !ignore_limit && self.limit != 0 {
+      next_limit = next_limit.min(self.limit);
+    }
+    if next_detected.is_none() {
+      return next_limit;
+    }
+    cmp::min(next_detected.unwrap(), next_limit)
+  }
+
   fn set_frame_properties(&mut self, output_frameno: u64)
    -> Result<bool, EncoderStatus> {
     let (fi, end_of_subgop) = self.build_frame_properties(output_frameno)?;
+    println!("output_frameno = {} frame type = {}", output_frameno, fi.frame_type);
     self.frame_invariants.insert(output_frameno, fi);
 
     Ok(end_of_subgop)
@@ -1021,6 +1052,92 @@ impl<T: Pixel> ContextInner<T> {
     Ok((fi, true))
   }
 
+  fn build_frame_properties_lookahead(&mut self, keyframe_detector: &mut SceneChangeDetector<T>, output_frameno: u64)
+    -> Result<(FrameInvariants<T>, bool), EncoderStatus> {
+    let mut fi = if output_frameno == 0 {
+      let seq = Sequence::new(&self.config);
+      // The first frame will always be a key frame
+      FrameInvariants::new_key_frame(
+        &FrameInvariants::new(
+          self.config.clone(),
+          seq
+        ),
+        0
+      )
+    } else {
+      self.lookahead_frame_invariants[&(output_frameno - 1)].clone()
+    };
+
+    // Initially set up the frame as an inter frame.
+    // We need to determine what the input_frameno is before we can look up the
+    //  frame type.
+    // If reordering is enabled, the output_frameno may not match the
+    //  input_frameno.
+    let output_frameno_in_gop =
+      output_frameno - self.lookahead_gop_output_frameno_start;
+    if output_frameno_in_gop > 0 {
+      let next_keyframe_input_frameno = self.next_keyframe_input_frameno_lookahead(
+        self.lookahead_gop_input_frameno_start, false);
+      let (fi_temp, end_of_subgop) = FrameInvariants::new_inter_frame(
+        &fi,
+        &self.inter_cfg,
+        self.lookahead_gop_input_frameno_start,
+        output_frameno_in_gop,
+        next_keyframe_input_frameno
+      );
+      fi = fi_temp;
+      if !end_of_subgop {
+        if !self.inter_cfg.reorder
+          || ((output_frameno_in_gop - 1) %
+          self.inter_cfg.group_output_len == 0
+          && fi.input_frameno == (next_keyframe_input_frameno - 1))
+        {
+          self.lookahead_gop_output_frameno_start = output_frameno;
+          self.lookahead_gop_input_frameno_start = next_keyframe_input_frameno;
+          fi.input_frameno = next_keyframe_input_frameno;
+        } else {
+          return Ok((fi, false));
+        }
+      }
+    }
+
+    match self.frame_q.get(&fi.input_frameno) {
+      Some(Some(_)) => {},
+      _ => { return Err(EncoderStatus::NeedMoreData); }
+    }
+
+    // Now that we know the input_frameno, look up the correct frame type
+    let frame_type = self.determine_frame_type_lookahead(keyframe_detector, fi.input_frameno);
+    if frame_type == FrameType::KEY {
+      self.lookahead_gop_output_frameno_start = output_frameno;
+      self.lookahead_gop_input_frameno_start = fi.input_frameno;
+      self.lookahead_keyframes.insert(fi.input_frameno);
+    }
+    fi.frame_type = frame_type;
+
+    let output_frameno_in_gop =
+      output_frameno - self.lookahead_gop_output_frameno_start;
+    if output_frameno_in_gop == 0 {
+      fi = FrameInvariants::new_key_frame(&fi,
+                                          self.lookahead_gop_input_frameno_start);
+    } else {
+      let next_keyframe_input_frameno = self.next_keyframe_input_frameno_lookahead(
+        self.lookahead_gop_input_frameno_start, false);
+      let (fi_temp, end_of_subgop) = FrameInvariants::new_inter_frame(
+        &fi,
+        &self.inter_cfg,
+        self.lookahead_gop_input_frameno_start,
+        output_frameno_in_gop,
+        next_keyframe_input_frameno
+      );
+      fi = fi_temp;
+      if !end_of_subgop {
+        return Ok((fi, false));
+      }
+    }
+    Ok((fi, true))
+  }
+
   pub(crate) fn done_processing(&self) -> bool {
     self.limit != 0 && self.frames_processed == self.limit
   }
@@ -1028,31 +1145,67 @@ impl<T: Pixel> ContextInner<T> {
   fn compute_lookahead_data(&mut self) {
     assert!(!self.inter_cfg.reorder); // TODO
 
-    for &input_frameno in self.frame_q.keys() {
-      // TODO: do we ever need to recompute existing lookahead data?
-      //       Can the reference frames change? If so then we do need to recompute.
-      if self.lookahead_data.contains_key(&input_frameno) {
+    // First pass through the input frames. Compute frame invariants and first pass lookahead data.
+    let mut keyframe_detector = self.keyframe_detector.borrow().clone();
+
+    let input_framenos = self.frame_q.iter().filter(|(_, v)| v.is_some()).map(|(k, _)| k).cloned().collect::<Vec<_>>();
+    for &input_frameno in input_framenos.iter() {
+      // TODO: do we ever need to recompute existing lookahead data? Can the reference frames
+      //       change? If so then we do need to recompute. The counters and stuff in
+      //       build_frame_properties_lookahead() would then need to be reset somehow.
+      if self.lookahead_data_first_pass.contains_key(&input_frameno) {
         continue;
       }
 
       let output_frameno = input_frameno; // TODO
 
-      // TODO: probably make the code that fills in frame_invariants do so right away and not in
-      //       subgops? So that we have all frame_invariants right away.
-      if !self.frame_invariants.contains_key(&output_frameno) {
-        continue;
+      let frame = self.frame_q.get(&input_frameno).unwrap().as_ref().cloned().unwrap();
+
+      // Compute the frame invariants.
+
+      // Set the correct keyframe detector last frame if it's available.
+      if input_frameno > 0 {
+        if let Some(Some(frame)) = self.frame_q.get(&(input_frameno - 1)).cloned() {
+          keyframe_detector.set_last_frame(frame, (input_frameno - 1) as usize);
+        }
       }
-
-      let frame = self.frame_q.get(&input_frameno).unwrap().as_ref().unwrap();
-      let fi = self.frame_invariants.get(&output_frameno).unwrap();
-
-      let mut fs = FrameState::new_with_frame(fi, frame.clone());
+      let (fi, _) = self.build_frame_properties_lookahead(&mut keyframe_detector, output_frameno).unwrap();
+      // TODO: set correct reference frames.
+      self.lookahead_frame_invariants.insert(output_frameno, fi);
+      let fi = self.lookahead_frame_invariants.get(&output_frameno).unwrap();
 
       // Compute downsampled versions of the frames.
+      let mut fs = FrameState::new_with_frame(fi, frame.clone());
       fs.input_hres.downsample_from(&frame.planes[0]);
       fs.input_hres.pad(fi.width, fi.height);
       fs.input_qres.downsample_from(&fs.input_hres);
       fs.input_qres.pad(fi.width, fi.height);
+
+      self.lookahead_data_first_pass.insert(input_frameno, LookaheadDataFirstPass {
+        input_hres: fs.input_hres,
+        input_qres: fs.input_qres,
+      });
+
+      println!("Computed first pass lookahead data for input_frameno = {} (frame type = {})", input_frameno, fi.frame_type);
+    }
+
+    // Second pass through the input frames. Compute motion vectors.
+    for &input_frameno in input_framenos.iter() {
+      let frame = self.frame_q.get(&input_frameno).unwrap().as_ref().unwrap();
+
+      let output_frameno = input_frameno; // TODO
+
+      if self.lookahead_data_second_pass.contains_key(&output_frameno) {
+        continue;
+      }
+
+      let fi = self.lookahead_frame_invariants.get(&output_frameno).unwrap();
+      let LookaheadDataFirstPass { input_hres, input_qres } = self.lookahead_data_first_pass.get(&input_frameno).unwrap();
+
+      let mut fs = FrameState::new_with_frame(fi, frame.clone());
+      // TODO: get rid of clones.
+      fs.input_hres = input_hres.clone();
+      fs.input_qres = input_qres.clone();
 
       // Compute the motion vectors.
       // TODO: this currently doesn't compute correct data as it searches for motion vectors from
@@ -1142,13 +1295,11 @@ impl<T: Pixel> ContextInner<T> {
           }
         });
 
-      self.lookahead_data.insert(input_frameno, LookaheadData {
-        input_hres: fs.input_hres,
-        input_qres: fs.input_qres,
+      self.lookahead_data_second_pass.insert(output_frameno, LookaheadDataSecondPass {
         motion_vectors: fs.frame_mvs,
       });
 
-      println!("Computed lookahead data for input_frameno = {}", input_frameno);
+      println!("Computed second pass lookahead data for input_frameno = {}", input_frameno);
 
       // let data = self.lookahead_data.get(&input_frameno).unwrap();
       // println!("{:?}", data);
@@ -1177,6 +1328,8 @@ impl<T: Pixel> ContextInner<T> {
       return Err(EncoderStatus::NeedMoreData);
     }
 
+    self.compute_lookahead_data();
+
     while !self.set_frame_properties(self.output_frameno)? {
       self.output_frameno += 1;
     }
@@ -1185,8 +1338,6 @@ impl<T: Pixel> ContextInner<T> {
      self.frame_invariants[&self.output_frameno].input_frameno) {
       return Err(EncoderStatus::LimitReached);
     }
-
-    self.compute_lookahead_data();
 
     let cur_output_frameno = self.output_frameno;
 
@@ -1321,19 +1472,26 @@ impl<T: Pixel> ContextInner<T> {
   }
 
   fn garbage_collect(&mut self, cur_input_frameno: u64) {
-    println!("garbage_collect({})", cur_input_frameno);
     if cur_input_frameno == 0 {
       return;
     }
     for i in 0..cur_input_frameno {
       self.frame_q.remove(&i);
-      self.lookahead_data.remove(&i);
+      if self.lookahead_data_first_pass.remove(&i).is_some() {
+        println!("self.lookahead_data_first_pass.remove(&{});", i);
+      }
     }
     if self.output_frameno < 2 {
       return;
     }
     for i in 0..(self.output_frameno - 1) {
       self.frame_invariants.remove(&i);
+      if self.lookahead_frame_invariants.remove(&i).is_some() {
+        println!("self.lookahead_frame_invariants.remove(&{});", i);
+      }
+      if self.lookahead_data_second_pass.remove(&i).is_some() {
+        println!("self.lookahead_data_second_pass.remove(&{});", i);
+      }
     }
   }
 
@@ -1370,6 +1528,45 @@ impl<T: Pixel> ContextInner<T> {
       }
       if keyframe_detector.detect_scene_change(frame,
        input_frameno as usize) {
+        return FrameType::KEY;
+      }
+    }
+    FrameType::INTER
+  }
+
+  fn determine_frame_type_lookahead(&self, keyframe_detector: &mut SceneChangeDetector<T>, input_frameno: u64) -> FrameType {
+    if input_frameno == 0 {
+      return FrameType::KEY;
+    }
+    if self.config.speed_settings.no_scene_detection {
+      if input_frameno % self.config.max_key_frame_interval == 0 {
+        return FrameType::KEY;
+      } else {
+        return FrameType::INTER;
+      }
+    }
+
+    let prev_keyframe_input_frameno = self.lookahead_keyframes.iter()
+      .rfind(|&&keyframe_input_frameno| keyframe_input_frameno < input_frameno)
+      .cloned()
+      .unwrap_or(0);
+    let frame = match self.frame_q.get(&input_frameno).cloned() {
+      Some(frame) => frame,
+      None => { return FrameType::KEY; }
+    };
+    if let Some(frame) = frame {
+      let distance = input_frameno - prev_keyframe_input_frameno;
+      if distance < self.config.min_key_frame_interval {
+        if distance + 1 == self.config.min_key_frame_interval {
+          keyframe_detector.set_last_frame(frame, input_frameno as usize);
+        }
+        return FrameType::INTER;
+      }
+      if distance >= self.config.max_key_frame_interval {
+        return FrameType::KEY;
+      }
+      if keyframe_detector.detect_scene_change(frame,
+                                               input_frameno as usize) {
         return FrameType::KEY;
       }
     }
@@ -1516,13 +1713,18 @@ impl<T: Pixel> From<&FrameInvariants<T>> for FirstPassFrame {
   }
 }
 
-/// Data computed for frames during lookahead.
+/// Data computed for frames during the first pass of the lookahead.
 #[derive(Debug)]
-struct LookaheadData<T: Pixel> {
+struct LookaheadDataFirstPass<T: Pixel> {
   /// Half-resolution version of input luma.
   input_hres: Plane<T>,
   /// Quarter-resolution version of input luma.
   input_qres: Plane<T>,
+}
+
+/// Data computed for frames during the second pass of the lookahead.
+#[derive(Debug)]
+struct LookaheadDataSecondPass {
   /// Motion vectors.
   motion_vectors: Vec<FrameMotionVectors>,
 }
