@@ -655,7 +655,9 @@ pub(crate) struct ContextInner<T: Pixel> {
   inter_cfg: InterConfig,
   output_frameno: u64,
   frames_processed: u64,
-  /// Maps *input_frameno* to frames
+  /// Maps *input_frameno* to frames.
+  ///
+  /// A None entry is created when the encoder is flushed.
   frame_q: BTreeMap<u64, Option<Arc<Frame<T>>>>, //    packet_q: VecDeque<Packet>
   /// Maps *output_frameno* to frame data
   frame_invariants: BTreeMap<u64, FrameInvariants<T>>,
