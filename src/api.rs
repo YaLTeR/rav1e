@@ -961,7 +961,7 @@ impl<T: Pixel> ContextInner<T> {
   fn set_frame_properties(&mut self, output_frameno: u64)
    -> Result<bool, EncoderStatus> {
     let (fi, end_of_subgop) = self.build_frame_properties(output_frameno)?;
-    println!("output_frameno = {} frame type = {}", output_frameno, fi.frame_type);
+    eprintln!("output_frameno = {} frame type = {}", output_frameno, fi.frame_type);
     self.frame_invariants.insert(output_frameno, fi);
 
     Ok(end_of_subgop)
@@ -1200,7 +1200,7 @@ impl<T: Pixel> ContextInner<T> {
           };
 
           fi.rec_buffer.frames[fi.ref_frames[LAST_FRAME.to_index()] as usize] = Some(Arc::new(reference_frame));
-          println!("Set reference frame for output_frameno = {}", output_frameno);
+          eprintln!("Set reference frame for output_frameno = {}", output_frameno);
         }
       }
 
@@ -1219,7 +1219,7 @@ impl<T: Pixel> ContextInner<T> {
         input_qres: fs.input_qres,
       });
 
-      println!("Computed first pass lookahead data for input_frameno = {} (frame type = {})", input_frameno, fi.frame_type);
+      eprintln!("Computed first pass lookahead data for input_frameno = {} (frame type = {})", input_frameno, fi.frame_type);
 
 //      let data = self.lookahead_data_first_pass.get(&input_frameno).unwrap();
 //      let plane = &data.input_qres;
@@ -1344,7 +1344,7 @@ impl<T: Pixel> ContextInner<T> {
         motion_vectors: fs.frame_mvs,
       });
 
-      println!("Computed second pass lookahead data for output_frameno = {}", output_frameno);
+      eprintln!("Computed second pass lookahead data for output_frameno = {}", output_frameno);
 
 //      let data = self.lookahead_data_second_pass.get(&output_frameno).unwrap();
 //      let mvs = &data.motion_vectors[LAST_FRAME.to_index()];
@@ -1522,7 +1522,7 @@ impl<T: Pixel> ContextInner<T> {
     for i in 0..cur_input_frameno {
       self.frame_q.remove(&i);
       if self.lookahead_data_first_pass.remove(&i).is_some() {
-        println!("self.lookahead_data_first_pass.remove(&{});", i);
+        eprintln!("self.lookahead_data_first_pass.remove(&{});", i);
       }
     }
     if self.output_frameno < 2 {
@@ -1531,10 +1531,10 @@ impl<T: Pixel> ContextInner<T> {
     for i in 0..(self.output_frameno - 1) {
       self.frame_invariants.remove(&i);
       if self.lookahead_frame_invariants.remove(&i).is_some() {
-        println!("self.lookahead_frame_invariants.remove(&{});", i);
+        eprintln!("self.lookahead_frame_invariants.remove(&{});", i);
       }
       if self.lookahead_data_second_pass.remove(&i).is_some() {
-        println!("self.lookahead_data_second_pass.remove(&{});", i);
+        eprintln!("self.lookahead_data_second_pass.remove(&{});", i);
       }
     }
   }
