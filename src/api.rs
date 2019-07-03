@@ -14,27 +14,31 @@ use rayon::prelude::*;
 use serde_derive::{Serialize, Deserialize};
 
 use crate::context::{FrameBlocks, SuperBlockOffset, CDFContext};
+use crate::dist::get_satd;
 use crate::encoder::*;
-use crate::frame::{Frame, Plane};
+use crate::frame::{Frame, Plane, PlaneOffset};
 use crate::mc::MotionVector;
 use crate::me::{MotionEstimation, FrameMotionVectors};
 use crate::metrics::calculate_frame_psnr;
 use crate::partition::*;
-use crate::rate::RCState;
+use crate::partition::RefType::LAST_FRAME;
+use crate::predict::PredictionMode;
 use crate::rate::FRAME_NSUBTYPES;
 use crate::rate::FRAME_SUBTYPE_I;
 use crate::rate::FRAME_SUBTYPE_P;
 use crate::rate::FRAME_SUBTYPE_SEF;
+use crate::rate::RCState;
 use crate::scenechange::SceneChangeDetector;
+use crate::tiling::{Area, TileRect};
+use crate::transform::TxSize;
 use crate::util::Pixel;
 
 use std::{cmp, fmt, io};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use crate::partition::RefType::LAST_FRAME;
+use std::sync::Arc;
 
 const LOOKAHEAD_FRAMES: u64 = 10;
 
@@ -682,6 +686,8 @@ pub(crate) struct ContextInner<T: Pixel> {
   lookahead_frame_invariants: BTreeMap<u64, FrameInvariants<T>>,
   /// Maps *output_frameno* to second pass lookahead data.
   lookahead_data_second_pass: BTreeMap<u64, LookaheadDataSecondPass>,
+  /// Maps *output_frameno* to third pass lookahead data.
+  lookahead_data_third_pass: BTreeMap<u64, LookaheadDataThirdPass>,
   lookahead_gop_output_frameno_start: u64,
   lookahead_gop_input_frameno_start: u64,
   lookahead_keyframes: BTreeSet<u64>,
@@ -891,6 +897,7 @@ impl<T: Pixel> ContextInner<T> {
         lookahead_data_first_pass: BTreeMap::new(),
         lookahead_frame_invariants: BTreeMap::new(),
         lookahead_data_second_pass: BTreeMap::new(),
+        lookahead_data_third_pass: BTreeMap::new(),
         lookahead_gop_output_frameno_start: 0,
         lookahead_gop_input_frameno_start: 0,
         lookahead_keyframes: BTreeSet::new(),
@@ -1363,6 +1370,244 @@ impl<T: Pixel> ContextInner<T> {
 //      }
 //      ::std::fs::write(format!("{}-mvs.bin", output_frameno), buf).unwrap();
     }
+
+    // Third pass through the input frames. Compute the future frame importance values.
+    //
+    // This needs to be recomputed for all frames every time because it changes as new frames are
+    // added.
+    self.lookahead_data_third_pass.clear();
+
+    // Initialize the importance values with zeros.
+    for &input_frameno in input_framenos.iter() {
+      let output_frameno = input_frameno; // TODO
+      let fi = self.lookahead_frame_invariants.get(&output_frameno).unwrap();
+
+      self.lookahead_data_third_pass.insert(output_frameno, LookaheadDataThirdPass {
+        block_future_importances: vec![0.; fi.w_in_b * fi.h_in_b].into_boxed_slice(),
+      });
+    }
+
+    // Compute and propagate the importance values from the last frame of the lookahead.
+    for &input_frameno in input_framenos.iter().rev() {
+      let frame = self.frame_q.get(&input_frameno).unwrap().as_ref().unwrap();
+
+      let output_frameno = input_frameno; // TODO
+      let fi = self.lookahead_frame_invariants.get(&output_frameno).unwrap();
+
+      const BLOCK_SIZE: i64 = 4;
+      const MV_UNITS_PER_PIXEL: i64 = 8;
+      const BLOCK_SIZE_IN_MV_UNITS: i64 = BLOCK_SIZE * MV_UNITS_PER_PIXEL;
+      const BLOCK_AREA_IN_MV_UNITS: i64 =
+        BLOCK_SIZE_IN_MV_UNITS * BLOCK_SIZE_IN_MV_UNITS;
+
+      for y in 0..fi.h_in_b {
+        for x in 0..fi.w_in_b {
+          // TODO: other reference frames
+          if input_frameno == 0 {
+            continue;
+          }
+          let reference_frame = self.frame_q.get(&(input_frameno - 1));
+          if reference_frame.is_none() {
+            continue;
+          }
+          let reference_frame = reference_frame.unwrap().as_ref().unwrap();
+
+          let mv = self
+            .lookahead_data_second_pass
+            .get(&output_frameno)
+            .unwrap()
+            .motion_vectors[LAST_FRAME.to_index()][y][x];
+
+          // Coordinates of the top-left corner of the reference block, in MV units.
+          let reference_x = x as i64 * BLOCK_SIZE_IN_MV_UNITS + mv.col as i64;
+          let reference_y = y as i64 * BLOCK_SIZE_IN_MV_UNITS + mv.row as i64;
+
+          let plane_org = frame.planes[0].region(Area::Rect {
+            x: x as isize * BLOCK_SIZE as isize,
+            y: y as isize * BLOCK_SIZE as isize,
+            width: BLOCK_SIZE as usize,
+            height: BLOCK_SIZE as usize
+          });
+
+          let plane_ref = reference_frame.planes[0].region(Area::Rect {
+            x: reference_x as isize / MV_UNITS_PER_PIXEL as isize,
+            y: reference_y as isize / MV_UNITS_PER_PIXEL as isize,
+            width: BLOCK_SIZE as usize,
+            height: BLOCK_SIZE as usize
+          });
+
+          // TODO: other intra prediction modes.
+          let edge_buf = get_intra_edges(
+            &frame.planes[0].as_region(),
+            PlaneOffset {
+              x: x as isize * BLOCK_SIZE as isize,
+              y: y as isize * BLOCK_SIZE as isize
+            },
+            TxSize::TX_4X4,
+            fi.sequence.bit_depth,
+            Some(PredictionMode::DC_PRED)
+          );
+
+          let mut plane_after_prediction = frame.planes[0].clone();
+          let mut plane_after_prediction_region = plane_after_prediction
+            .region_mut(Area::Rect {
+              x: x as isize * BLOCK_SIZE as isize,
+              y: y as isize * BLOCK_SIZE as isize,
+              width: BLOCK_SIZE as usize,
+              height: BLOCK_SIZE as usize
+            });
+
+          PredictionMode::DC_PRED.predict_intra(
+            TileRect {
+              x: x * BLOCK_SIZE as usize,
+              y: y * BLOCK_SIZE as usize,
+              width: BLOCK_SIZE as usize,
+              height: BLOCK_SIZE as usize
+            },
+            &mut plane_after_prediction_region,
+            TxSize::TX_4X4,
+            fi.sequence.bit_depth,
+            &[], // Not used by DC_PRED.
+            0,   // Not used by DC_PRED.
+            &edge_buf
+          );
+
+          let plane_after_prediction_region =
+            plane_after_prediction.region(Area::Rect {
+              x: x as isize * BLOCK_SIZE as isize,
+              y: y as isize * BLOCK_SIZE as isize,
+              width: BLOCK_SIZE as usize,
+              height: BLOCK_SIZE as usize
+            });
+
+          let intra_cost: f32 = get_satd(
+            &plane_org,
+            &plane_after_prediction_region,
+            BLOCK_SIZE as usize,
+            BLOCK_SIZE as usize,
+            self.config.bit_depth
+          ) as f32;
+          let inter_cost = get_satd(
+            &plane_org,
+            &plane_ref,
+            BLOCK_SIZE as usize,
+            BLOCK_SIZE as usize,
+            self.config.bit_depth
+          ) as f32;
+
+          let future_importance = self
+            .lookahead_data_third_pass
+            .get(&output_frameno)
+            .unwrap()
+            .block_future_importances[y * fi.w_in_b + x];
+
+          let propagate_fraction = (1. - inter_cost / intra_cost).max(0.);
+          let propagate_amount =
+            (intra_cost + future_importance) * propagate_fraction;
+
+          if let Some(reference_data) =
+          self.lookahead_data_third_pass.get_mut(&(output_frameno - 1))
+          {
+            let reference_frame_future_importances =
+              &mut reference_data.block_future_importances;
+
+            let mut propagate =
+              |block_x_in_mv_units, block_y_in_mv_units, fraction| {
+                let x = block_x_in_mv_units / BLOCK_SIZE_IN_MV_UNITS;
+                let y = block_y_in_mv_units / BLOCK_SIZE_IN_MV_UNITS;
+
+                // TODO: propagate partially if the block is partially off-frame (possible on right and bottom edges)?
+                if x >= 0
+                  && y >= 0
+                  && (x as usize) < fi.w_in_b
+                  && (y as usize) < fi.h_in_b
+                {
+                  reference_frame_future_importances
+                    [y as usize * fi.w_in_b + x as usize] +=
+                    propagate_amount * fraction;
+                }
+              };
+
+            // Coordinates of the top-left corner of the block intersecting the reference block from
+            // the top-left.
+            let top_left_block_x =
+              reference_x / BLOCK_SIZE_IN_MV_UNITS * BLOCK_SIZE_IN_MV_UNITS;
+            let top_left_block_y =
+              reference_y / BLOCK_SIZE_IN_MV_UNITS * BLOCK_SIZE_IN_MV_UNITS;
+
+            let top_right_block_x = top_left_block_x + BLOCK_SIZE_IN_MV_UNITS;
+            let top_right_block_y = top_left_block_y;
+            let bottom_left_block_x = top_left_block_x;
+            let bottom_left_block_y =
+              top_left_block_y + BLOCK_SIZE_IN_MV_UNITS;
+            let bottom_right_block_x = top_right_block_x;
+            let bottom_right_block_y = bottom_left_block_y;
+
+            let top_left_block_fraction = ((top_right_block_x - reference_x)
+              * (bottom_left_block_y - reference_y))
+              as f32
+              / BLOCK_AREA_IN_MV_UNITS as f32;
+
+            propagate(
+              top_left_block_x,
+              top_left_block_y,
+              top_left_block_fraction
+            );
+
+            let top_right_block_fraction =
+              ((reference_x + BLOCK_SIZE_IN_MV_UNITS - top_right_block_x)
+                * (bottom_left_block_y - reference_y)) as f32
+                / BLOCK_AREA_IN_MV_UNITS as f32;
+
+            propagate(
+              top_right_block_x,
+              top_right_block_y,
+              top_right_block_fraction
+            );
+
+            let bottom_left_block_fraction = ((top_right_block_x
+              - reference_x)
+              * (reference_y + BLOCK_SIZE_IN_MV_UNITS - bottom_left_block_y))
+              as f32
+              / BLOCK_AREA_IN_MV_UNITS as f32;
+
+            propagate(
+              bottom_left_block_x,
+              bottom_left_block_y,
+              bottom_left_block_fraction
+            );
+
+            let bottom_right_block_fraction =
+              ((reference_x + BLOCK_SIZE_IN_MV_UNITS - top_right_block_x)
+                * (reference_y + BLOCK_SIZE_IN_MV_UNITS - bottom_left_block_y))
+                as f32
+                / BLOCK_AREA_IN_MV_UNITS as f32;
+
+            propagate(
+              bottom_right_block_x,
+              bottom_right_block_y,
+              bottom_right_block_fraction
+            );
+          }
+        }
+      }
+
+      eprintln!("Computed third pass lookahead data for output_frameno = {}", output_frameno);
+
+//      let data = self.lookahead_data_third_pass.get(&output_frameno).unwrap();
+//      let data = &data.block_future_importances;
+//      use byteorder::{WriteBytesExt, NativeEndian};
+//      let mut buf = vec![];
+//      buf.write_u64::<NativeEndian>(fi.h_in_b as u64).unwrap();
+//      buf.write_u64::<NativeEndian>(fi.w_in_b as u64).unwrap();
+//      for y in 0..fi.h_in_b {
+//        for x in 0..fi.w_in_b {
+//          let importance = data[y * fi.w_in_b + x];
+//          buf.write_f32::<NativeEndian>(importance).unwrap();
+//        }
+//      }
+//      ::std::fs::write(format!("{}-{}-imps.bin", input_framenos[0], output_frameno), buf).unwrap();
+    }
   }
 
   pub fn receive_packet(&mut self) -> Result<Packet<T>, EncoderStatus> {
@@ -1537,6 +1782,9 @@ impl<T: Pixel> ContextInner<T> {
       }
       if self.lookahead_data_second_pass.remove(&i).is_some() {
         eprintln!("self.lookahead_data_second_pass.remove(&{});", i);
+      }
+      if self.lookahead_data_third_pass.remove(&i).is_some() {
+        eprintln!("self.lookahead_data_third_pass.remove(&{});", i);
       }
     }
   }
@@ -1773,6 +2021,14 @@ struct LookaheadDataFirstPass<T: Pixel> {
 struct LookaheadDataSecondPass {
   /// Motion vectors.
   motion_vectors: Vec<FrameMotionVectors>,
+}
+
+/// Data computed for frames during the third pass of the lookahead.
+#[derive(Debug)]
+struct LookaheadDataThirdPass {
+  /// Stores each 4×4 block's future importance, that is, a value indicating how much future frames
+  /// depend on this block (for example, via inter-prediction).
+  block_future_importances: Box<[f32]>,
 }
 
 #[cfg(test)]
