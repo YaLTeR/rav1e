@@ -1144,7 +1144,10 @@ impl<T: Pixel> ContextInner<T> {
   }
 
   fn compute_lookahead_data(&mut self) {
-    assert!(!self.inter_cfg.reorder); // TODO
+//    assert!(!self.inter_cfg.reorder); // TODO
+    if self.inter_cfg.reorder {
+      return;
+    }
 
     // First pass through the input frames. Compute frame invariants and first pass lookahead data.
     let mut keyframe_detector = self.keyframe_detector.borrow().clone();
