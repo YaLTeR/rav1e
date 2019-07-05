@@ -1153,6 +1153,13 @@ impl<T: Pixel> ContextInner<T> {
   }
 
   fn compute_lookahead_data(&mut self) {
+    /// Enable to make this code output:
+    /// - i-qres.png: quarter-resolution luma planes,
+    /// - i-hres.png: half-resolution luma planes,
+    /// - i-mvs.bin: motion vectors,
+    /// - j-i-imps.bin: block importances.
+    const WRITE_DEBUG_FILES: bool = false;
+
 //    assert!(!self.inter_cfg.reorder); // TODO
     if self.inter_cfg.reorder {
       return;
@@ -1230,19 +1237,21 @@ impl<T: Pixel> ContextInner<T> {
 
       eprintln!("Computed first pass lookahead data for input_frameno = {} (frame type = {})", input_frameno, fi.frame_type);
 
-//      let data = self.lookahead_data_first_pass.get(&input_frameno).unwrap();
-//      let plane = &data.input_qres;
-//      image::GrayImage::from_fn(
-//        plane.cfg.width as u32,
-//        plane.cfg.height as u32,
-//        |x, y| image::Luma([plane.p(x as usize, y as usize).as_()])
-//      ).save(format!("{}-qres.png", input_frameno)).unwrap();
-//      let plane = &data.input_hres;
-//      image::GrayImage::from_fn(
-//        plane.cfg.width as u32,
-//        plane.cfg.height as u32,
-//        |x, y| image::Luma([plane.p(x as usize, y as usize).as_()])
-//      ).save(format!("{}-hres.png", input_frameno)).unwrap();
+      if WRITE_DEBUG_FILES {
+        let data = self.lookahead_data_first_pass.get(&input_frameno).unwrap();
+        let plane = &data.input_qres;
+        image::GrayImage::from_fn(
+          plane.cfg.width as u32,
+          plane.cfg.height as u32,
+          |x, y| image::Luma([plane.p(x as usize, y as usize).as_()])
+        ).save(format!("{}-qres.png", input_frameno)).unwrap();
+        let plane = &data.input_hres;
+        image::GrayImage::from_fn(
+          plane.cfg.width as u32,
+          plane.cfg.height as u32,
+          |x, y| image::Luma([plane.p(x as usize, y as usize).as_()])
+        ).save(format!("{}-hres.png", input_frameno)).unwrap();
+      }
     }
 
     // Second pass through the input frames. Compute motion vectors.
@@ -1355,20 +1364,22 @@ impl<T: Pixel> ContextInner<T> {
 
       eprintln!("Computed second pass lookahead data for output_frameno = {}", output_frameno);
 
-//      let data = self.lookahead_data_second_pass.get(&output_frameno).unwrap();
-//      let mvs = &data.motion_vectors[LAST_FRAME.to_index()];
-//      use byteorder::{WriteBytesExt, NativeEndian};
-//      let mut buf = vec![];
-//      buf.write_u64::<NativeEndian>(mvs.rows as u64).unwrap();
-//      buf.write_u64::<NativeEndian>(mvs.cols as u64).unwrap();
-//      for y in 0..mvs.rows {
-//        for x in 0..mvs.cols {
-//          let mv = mvs[y][x];
-//          buf.write_i16::<NativeEndian>(mv.row).unwrap();
-//          buf.write_i16::<NativeEndian>(mv.col).unwrap();
-//        }
-//      }
-//      ::std::fs::write(format!("{}-mvs.bin", output_frameno), buf).unwrap();
+      if WRITE_DEBUG_FILES {
+        let data = self.lookahead_data_second_pass.get(&output_frameno).unwrap();
+        let mvs = &data.motion_vectors[LAST_FRAME.to_index()];
+        use byteorder::{WriteBytesExt, NativeEndian};
+        let mut buf = vec![];
+        buf.write_u64::<NativeEndian>(mvs.rows as u64).unwrap();
+        buf.write_u64::<NativeEndian>(mvs.cols as u64).unwrap();
+        for y in 0..mvs.rows {
+          for x in 0..mvs.cols {
+            let mv = mvs[y][x];
+            buf.write_i16::<NativeEndian>(mv.row).unwrap();
+            buf.write_i16::<NativeEndian>(mv.col).unwrap();
+          }
+        }
+        ::std::fs::write(format!("{}-mvs.bin", output_frameno), buf).unwrap();
+      }
     }
 
     // Third pass through the input frames. Compute the future frame importance values.
@@ -1594,19 +1605,21 @@ impl<T: Pixel> ContextInner<T> {
 
       eprintln!("Computed third pass lookahead data for output_frameno = {}", output_frameno);
 
-//      let data = self.lookahead_data_third_pass.get(&output_frameno).unwrap();
-//      let data = &data.block_future_importances;
-//      use byteorder::{WriteBytesExt, NativeEndian};
-//      let mut buf = vec![];
-//      buf.write_u64::<NativeEndian>(fi.h_in_b as u64).unwrap();
-//      buf.write_u64::<NativeEndian>(fi.w_in_b as u64).unwrap();
-//      for y in 0..fi.h_in_b {
-//        for x in 0..fi.w_in_b {
-//          let importance = data[y * fi.w_in_b + x];
-//          buf.write_f32::<NativeEndian>(importance).unwrap();
-//        }
-//      }
-//      ::std::fs::write(format!("{}-{}-imps.bin", input_framenos[0], output_frameno), buf).unwrap();
+      if WRITE_DEBUG_FILES {
+        let data = self.lookahead_data_third_pass.get(&output_frameno).unwrap();
+        let data = &data.block_future_importances;
+        use byteorder::{WriteBytesExt, NativeEndian};
+        let mut buf = vec![];
+        buf.write_u64::<NativeEndian>(fi.h_in_b as u64).unwrap();
+        buf.write_u64::<NativeEndian>(fi.w_in_b as u64).unwrap();
+        for y in 0..fi.h_in_b {
+          for x in 0..fi.w_in_b {
+            let importance = data[y * fi.w_in_b + x];
+            buf.write_f32::<NativeEndian>(importance).unwrap();
+          }
+        }
+        ::std::fs::write(format!("{}-{}-imps.bin", input_framenos[0], output_frameno), buf).unwrap();
+      }
     }
   }
 
