@@ -22,7 +22,7 @@ pub fn segmentation_optimize<T: Pixel>(fi: &FrameInvariants<T>, fs: &mut FrameSt
     // We don't change the values between frames.
     fs.segmentation.update_data = fi.primary_ref_frame == PRIMARY_REF_NONE;
 
-    const TEMPORAL_RDO_QI_DELTA: i16 = 15;
+    let TEMPORAL_RDO_QI_DELTA: i16 = fi.config.segmentation_qi_delta as i16;
 
     // Fill in 3 slots with 0, delta, -delta.
     for i in 0..3 {
