@@ -313,6 +313,11 @@ pub fn parse_cli() -> Result<CliOptions, CliError> {
         .long("rdo_bias_addend")
         .takes_value(true)
     )
+    .arg(
+      Arg::with_name("segmentation_qi_delta")
+        .long("segmentation_qi_delta")
+        .takes_value(true)
+    )
     .subcommand(SubCommand::with_name("advanced")
                 .setting(AppSettings::Hidden)
                 .about("Advanced features")
@@ -567,6 +572,11 @@ fn parse_config(matches: &ArgMatches<'_>) -> Result<EncoderConfig, CliError> {
     matches.value_of("rdo_bias_addend").map(|s| s.parse().unwrap())
   {
     cfg.rdo_bias_addend = x;
+  }
+  if let Some(x) =
+    matches.value_of("segmentation_qi_delta").map(|s| s.parse().unwrap())
+  {
+    cfg.segmentation_qi_delta = x;
   }
 
   Ok(cfg)

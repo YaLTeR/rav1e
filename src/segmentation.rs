@@ -26,7 +26,7 @@ pub fn segmentation_optimize<T: Pixel>(
 
   // A series of AWCY runs with deltas 10, 13, 15, 17, 20 showed this to be
   // the optimal one.
-  const TEMPORAL_RDO_QI_DELTA: i16 = 15;
+  let TEMPORAL_RDO_QI_DELTA: i16 = fi.config.segmentation_qi_delta as i16;
 
   // Fill in 3 slots with 0, delta, -delta. The slot IDs are also used in
   // luma_chroma_mode_rdo() so if you change things here make sure to check

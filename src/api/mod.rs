@@ -114,6 +114,7 @@ pub struct EncoderConfig {
 
   pub rdo_bias_factor: f32,
   pub rdo_bias_addend: f64,
+  pub segmentation_qi_delta: u8,
 }
 
 /// Default preset for EncoderConfig: it is a balance between quality and speed.
@@ -169,6 +170,7 @@ impl EncoderConfig {
 
       rdo_bias_factor: 3.,
       rdo_bias_addend: 0.8,
+      segmentation_qi_delta: 15,
     }
   }
 
