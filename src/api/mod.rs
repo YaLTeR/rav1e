@@ -111,6 +111,9 @@ pub struct EncoderConfig {
   pub speed_settings: SpeedSettings,
   pub show_psnr: bool,
   pub train_rdo: bool,
+
+  pub rdo_bias_factor: f32,
+  pub rdo_bias_addend: f64,
 }
 
 /// Default preset for EncoderConfig: it is a balance between quality and speed.
@@ -163,6 +166,9 @@ impl EncoderConfig {
       speed_settings: SpeedSettings::from_preset(speed),
       show_psnr: false,
       train_rdo: false,
+
+      rdo_bias_factor: 3.,
+      rdo_bias_addend: 0.8,
     }
   }
 
