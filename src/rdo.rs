@@ -381,8 +381,10 @@ pub fn compute_rd_cost<T: Pixel>(
   let mean_importance = compute_mean_importance(fi, frame_bo, bsize);
 
   // Chosen based on a series of AWCY runs.
-  const FACTOR: f32 = 3.;
-  const ADDEND: f64 = 0.8;
+  // const FACTOR: f32 = 3.;
+  // const ADDEND: f64 = 0.8;
+  let FACTOR = fi.config.rdo_bias_factor;
+  let ADDEND = fi.config.rdo_bias_addend;
 
   let bias = (mean_importance / FACTOR) as f64 + ADDEND;
   debug_assert!(bias.is_finite());

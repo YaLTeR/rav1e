@@ -35,7 +35,7 @@ pub struct CliOptions {
   pub verbose: bool,
   pub threads: usize,
   pub pass1file_name: Option<String>,
-  pub pass2file_name: Option<String>
+  pub pass2file_name: Option<String>,
 }
 
 pub fn parse_cli() -> Result<CliOptions, CliError> {
@@ -303,6 +303,16 @@ pub fn parse_cli() -> Result<CliOptions, CliError> {
       Arg::with_name("train-rdo")
         .long("train-rdo")
     )
+    .arg(
+      Arg::with_name("rdo_bias_factor")
+        .long("rdo_bias_factor")
+        .takes_value(true)
+    )
+    .arg(
+      Arg::with_name("rdo_bias_addend")
+        .long("rdo_bias_addend")
+        .takes_value(true)
+    )
     .subcommand(SubCommand::with_name("advanced")
                 .setting(AppSettings::Hidden)
                 .about("Advanced features")
@@ -498,6 +508,13 @@ fn parse_config(matches: &ArgMatches<'_>) -> EncoderConfig {
 
   cfg.low_latency = matches.is_present("LOW_LATENCY");
   cfg.train_rdo = train_rdo;
+
+  if let Some(x) = matches.value_of("rdo_bias_factor").map(|s| s.parse().unwrap()) {
+    cfg.rdo_bias_factor = x;
+  }
+  if let Some(x) = matches.value_of("rdo_bias_addend").map(|s| s.parse().unwrap()) {
+    cfg.rdo_bias_addend = x;
+  }
 
   cfg
 }
