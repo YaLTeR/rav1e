@@ -13,14 +13,27 @@ use crate::context::*;
 use crate::FrameInvariants;
 use crate::FrameState;
 use crate::util::Pixel;
+use crate::header::PRIMARY_REF_NONE;
 
-pub fn segmentation_optimize<T: Pixel>(_fi: &FrameInvariants<T>, fs: &mut FrameState<T>) {
-    fs.segmentation.enabled = false;
-    fs.segmentation.update_data = false;
-    fs.segmentation.update_map = false;
+pub fn segmentation_optimize<T: Pixel>(fi: &FrameInvariants<T>, fs: &mut FrameState<T>) {
+    fs.segmentation.enabled = true;
+    fs.segmentation.update_map = true;
 
-    fs.segmentation.features[0][SegLvl::SEG_LVL_ALT_Q as usize] = false;
-    fs.segmentation.data[0][SegLvl::SEG_LVL_ALT_Q as usize] = 0;
+    // We don't change the values between frames.
+    fs.segmentation.update_data = fi.primary_ref_frame == PRIMARY_REF_NONE;
+
+    const TEMPORAL_RDO_QI_DELTA: i16 = 15;
+
+    // Fill in 3 slots with 0, delta, -delta.
+    for i in 0..3 {
+      fs.segmentation.features[i][SegLvl::SEG_LVL_ALT_Q as usize] = true;
+      fs.segmentation.data[i][SegLvl::SEG_LVL_ALT_Q as usize] = match i {
+        0 => 0,
+        1 => TEMPORAL_RDO_QI_DELTA,
+        2 => -TEMPORAL_RDO_QI_DELTA,
+        _ => unreachable!()
+      };
+    }
 
     /* Figure out parameters */
     fs.segmentation.preskip = false;
