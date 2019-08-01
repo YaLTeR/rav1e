@@ -16,23 +16,26 @@ use crate::util::Pixel;
 use crate::header::PRIMARY_REF_NONE;
 
 pub fn segmentation_optimize<T: Pixel>(fi: &FrameInvariants<T>, fs: &mut FrameState<T>) {
-    fs.segmentation.enabled = true;
-    fs.segmentation.update_map = true;
+    // Segmentation is currently used only for the quantizer RDO.
+    if fi.config.speed_settings.quantizer_rdo {
+      fs.segmentation.enabled = true;
+      fs.segmentation.update_map = true;
 
-    // We don't change the values between frames.
-    fs.segmentation.update_data = fi.primary_ref_frame == PRIMARY_REF_NONE;
+      // We don't change the values between frames.
+      fs.segmentation.update_data = fi.primary_ref_frame == PRIMARY_REF_NONE;
 
-    let TEMPORAL_RDO_QI_DELTA: i16 = fi.config.segmentation_qi_delta as i16;
+      let TEMPORAL_RDO_QI_DELTA: i16 = fi.config.segmentation_qi_delta as i16;
 
-    // Fill in 3 slots with 0, delta, -delta.
-    for i in 0..3 {
-      fs.segmentation.features[i][SegLvl::SEG_LVL_ALT_Q as usize] = true;
-      fs.segmentation.data[i][SegLvl::SEG_LVL_ALT_Q as usize] = match i {
-        0 => 0,
-        1 => TEMPORAL_RDO_QI_DELTA,
-        2 => -TEMPORAL_RDO_QI_DELTA,
-        _ => unreachable!()
-      };
+      // Fill in 3 slots with 0, delta, -delta.
+      for i in 0..3 {
+        fs.segmentation.features[i][SegLvl::SEG_LVL_ALT_Q as usize] = true;
+        fs.segmentation.data[i][SegLvl::SEG_LVL_ALT_Q as usize] = match i {
+          0 => 0,
+          1 => TEMPORAL_RDO_QI_DELTA,
+          2 => -TEMPORAL_RDO_QI_DELTA,
+          _ => unreachable!()
+        };
+      }
     }
 
     /* Figure out parameters */
