@@ -388,6 +388,7 @@ pub fn compute_rd_cost<T: Pixel>(
 
   let bias = (mean_importance / FACTOR) as f64 + ADDEND;
   debug_assert!(bias.is_finite());
+  let bias = 1.;
 
   let rate_in_bits = (rate as f64) / ((1 << OD_BITRES) as f64);
   (distortion as f64) * bias + fi.lambda * rate_in_bits
