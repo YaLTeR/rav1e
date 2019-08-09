@@ -30,13 +30,15 @@ pub fn segmentation_optimize<T: Pixel>(
     // the optimal one.
     const TEMPORAL_RDO_QI_DELTA: i16 = 15;
 
-    // Fill in 3 slots with 0, delta, -delta.
-    for i in 0..3 {
+    // Fill in 5 slots with 0, delta, -delta, 2*delta, -2*delta.
+    for i in 0..5 {
       fs.segmentation.features[i][SegLvl::SEG_LVL_ALT_Q as usize] = true;
       fs.segmentation.data[i][SegLvl::SEG_LVL_ALT_Q as usize] = match i {
         0 => 0,
         1 => TEMPORAL_RDO_QI_DELTA,
         2 => -TEMPORAL_RDO_QI_DELTA,
+        3 => 2 * TEMPORAL_RDO_QI_DELTA,
+        4 => -2 * TEMPORAL_RDO_QI_DELTA,
         _ => unreachable!(),
       };
     }

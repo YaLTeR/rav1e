@@ -509,7 +509,7 @@ fn luma_chroma_mode_rdo<T: Pixel> (luma_mode: PredictionMode,
 
     // If skip is true, sidx is not coded.
     // If quantizer RDO is disabled, sidx isn't coded either.
-    let sidx_range = if skip || !fi.config.speed_settings.quantizer_rdo { 0..=0 } else { 0..=2 };
+    let sidx_range = if skip || !fi.config.speed_settings.quantizer_rdo { 0..=0 } else { 0..=4 };
 
     for sidx in sidx_range {
       cw.bc.blocks.set_segmentation_idx(tile_bo, bsize, sidx);
