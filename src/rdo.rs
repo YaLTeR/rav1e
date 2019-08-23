@@ -234,7 +234,7 @@ fn cdef_dist_wxh_8x8<T: Pixel>(
 }
 
 #[allow(unused)]
-fn cdef_dist_wxh<T: Pixel, F: Fn(Area, BlockSize) -> f64>(
+fn cdef_dist_wxh<T: Pixel, F: Fn(Area, BlockSize) -> f32>(
   src1: &PlaneRegion<'_, T>, src2: &PlaneRegion<'_, T>, w: usize, h: usize,
   bit_depth: usize, compute_bias: F,
 ) -> u64 {
@@ -258,14 +258,14 @@ fn cdef_dist_wxh<T: Pixel, F: Fn(Area, BlockSize) -> f64>(
       // cdef is always called on non-subsampled planes, so BLOCK_8X8 is
       // correct here.
       let bias = compute_bias(area, BlockSize::BLOCK_8X8);
-      sum += (value as f64 * bias) as u64;
+      sum += (value as f32 * bias) as u64;
     }
   }
   sum
 }
 
 // Sum of Squared Error for a wxh block
-pub fn sse_wxh<T: Pixel, F: Fn(Area, BlockSize) -> f64>(
+pub fn sse_wxh<T: Pixel, F: Fn(Area, BlockSize) -> f32>(
   src1: &PlaneRegion<'_, T>, src2: &PlaneRegion<'_, T>, w: usize, h: usize,
   compute_bias: F,
 ) -> u64 {
@@ -309,7 +309,7 @@ pub fn sse_wxh<T: Pixel, F: Fn(Area, BlockSize) -> f64>(
         // non-subsampled blocks.
         BlockSize::BLOCK_4X4,
       );
-      sse += (value as f64 * bias) as u64;
+      sse += (value as f32 * bias) as u64;
     }
   }
   sse
@@ -419,7 +419,7 @@ fn compute_tx_distortion<T: Pixel>(
     assert!(tx_dist >= 0);
     let bias =
       compute_distortion_bias(fi, ts.to_frame_block_offset(tile_bo), bsize);
-    (tx_dist as f64 * bias) as u64
+    (tx_dist as f32 * bias) as u64
   };
 
   if !luma_only && skip {
@@ -478,14 +478,14 @@ fn compute_mean_importance<T: Pixel>(
 
 fn compute_distortion_bias<T: Pixel>(
   fi: &FrameInvariants<T>, frame_bo: PlaneBlockOffset, bsize: BlockSize,
-) -> f64 {
+) -> f32 {
   let mean_importance = compute_mean_importance(fi, frame_bo, bsize);
 
   // Chosen based on a series of AWCY runs.
   const FACTOR: f32 = 3.;
-  const ADDEND: f64 = 0.8;
+  const ADDEND: f32 = 0.8;
 
-  let bias = (mean_importance / FACTOR) as f64 + ADDEND;
+  let bias = mean_importance / FACTOR + ADDEND;
   debug_assert!(bias.is_finite());
 
   bias
@@ -1621,7 +1621,7 @@ fn rdo_loop_plane_error<T: Pixel>(
           ts.to_frame_block_offset(bo),
           BlockSize::BLOCK_8X8,
         );
-        err += (value as f64 * bias) as u64;
+        err += (value as f32 * bias) as u64;
       }
     }
   }
