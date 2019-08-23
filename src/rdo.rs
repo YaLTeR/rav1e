@@ -487,7 +487,8 @@ fn compute_distortion_bias<T: Pixel>(
   let bias = (mean_importance / FACTOR) as f64 + ADDEND;
   debug_assert!(bias.is_finite());
 
-  bias
+  // bias
+  1.
 }
 
 pub fn compute_rd_cost<T: Pixel>(
