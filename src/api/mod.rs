@@ -26,7 +26,7 @@ use crate::dist::get_satd;
 use crate::encoder::*;
 use crate::frame::*;
 use crate::metrics::calculate_frame_psnr;
-use crate::partition::*;
+use crate::partition::{RefType::LAST3_FRAME, *};
 use crate::predict::PredictionMode;
 use crate::rate::RCState;
 use crate::rate::FRAME_NSUBTYPES;
@@ -1737,7 +1737,9 @@ impl<T: Pixel> ContextInner<T> {
       let mut unique_indices = ArrayVec::<[_; 3]>::new();
 
       for (mv_index, &rec_index) in fi.ref_frames.iter().enumerate() {
-        if unique_indices.iter().find(|&&(_, r)| r == rec_index).is_none() {
+        if mv_index != LAST3_FRAME.to_index() as usize
+          && unique_indices.iter().find(|&&(_, r)| r == rec_index).is_none()
+        {
           unique_indices.push((mv_index, rec_index));
         }
       }
