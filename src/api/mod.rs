@@ -32,7 +32,7 @@ use crate::encoder::*;
 use crate::frame::*;
 use crate::metrics::calculate_frame_psnr;
 use crate::partition::*;
-use crate::predict::PredictionMode;
+use crate::predict::RAV1E_INTRA_MODES;
 use crate::rate::RCState;
 use crate::rate::FRAME_NSUBTYPES;
 use crate::rate::FRAME_SUBTYPE_I;
@@ -1806,7 +1806,6 @@ impl<T: Pixel> ContextInner<T> {
           height: IMPORTANCE_BLOCK_SIZE,
         });
 
-        // TODO: other intra prediction modes.
         let edge_buf = get_intra_edges(
           &frame.planes[0].as_region(),
           TileBlockOffset(BlockOffset { x, y }),
@@ -1819,47 +1818,55 @@ impl<T: Pixel> ContextInner<T> {
           },
           TxSize::TX_8X8,
           fi.sequence.bit_depth,
-          Some(PredictionMode::DC_PRED),
+          None,
         );
 
-        let mut plane_after_prediction_region = plane_after_prediction
-          .region_mut(Area::Rect {
-            x: (x * IMPORTANCE_BLOCK_SIZE) as isize,
-            y: (y * IMPORTANCE_BLOCK_SIZE) as isize,
-            width: IMPORTANCE_BLOCK_SIZE,
-            height: IMPORTANCE_BLOCK_SIZE,
-          });
+        let bit_depth = self.config.bit_depth;
+        let intra_mode_set = RAV1E_INTRA_MODES;
+        let intra_cost = intra_mode_set
+          .iter()
+          .map(|&luma_mode| {
+            let mut plane_after_prediction_region = plane_after_prediction
+              .region_mut(Area::Rect {
+                x: (x * IMPORTANCE_BLOCK_SIZE) as isize,
+                y: (y * IMPORTANCE_BLOCK_SIZE) as isize,
+                width: IMPORTANCE_BLOCK_SIZE,
+                height: IMPORTANCE_BLOCK_SIZE,
+              });
 
-        PredictionMode::DC_PRED.predict_intra(
-          TileRect {
-            x: x * IMPORTANCE_BLOCK_SIZE,
-            y: y * IMPORTANCE_BLOCK_SIZE,
-            width: IMPORTANCE_BLOCK_SIZE,
-            height: IMPORTANCE_BLOCK_SIZE,
-          },
-          &mut plane_after_prediction_region,
-          TxSize::TX_8X8,
-          fi.sequence.bit_depth,
-          &[], // Not used by DC_PRED.
-          0,   // Not used by DC_PRED.
-          &edge_buf,
-        );
+            luma_mode.predict_intra(
+              TileRect {
+                x: x * IMPORTANCE_BLOCK_SIZE,
+                y: y * IMPORTANCE_BLOCK_SIZE,
+                width: IMPORTANCE_BLOCK_SIZE,
+                height: IMPORTANCE_BLOCK_SIZE,
+              },
+              &mut plane_after_prediction_region,
+              TxSize::TX_8X8,
+              fi.sequence.bit_depth,
+              &[], // Not used by luma modes.
+              0,   // Not used by luma modes.
+              &edge_buf,
+            );
 
-        let plane_after_prediction_region =
-          plane_after_prediction.region(Area::Rect {
-            x: (x * IMPORTANCE_BLOCK_SIZE) as isize,
-            y: (y * IMPORTANCE_BLOCK_SIZE) as isize,
-            width: IMPORTANCE_BLOCK_SIZE,
-            height: IMPORTANCE_BLOCK_SIZE,
-          });
+            let plane_after_prediction_region =
+              plane_after_prediction.region(Area::Rect {
+                x: (x * IMPORTANCE_BLOCK_SIZE) as isize,
+                y: (y * IMPORTANCE_BLOCK_SIZE) as isize,
+                width: IMPORTANCE_BLOCK_SIZE,
+                height: IMPORTANCE_BLOCK_SIZE,
+              });
 
-        let intra_cost = get_satd(
-          &plane_org,
-          &plane_after_prediction_region,
-          IMPORTANCE_BLOCK_SIZE,
-          IMPORTANCE_BLOCK_SIZE,
-          self.config.bit_depth,
-        );
+            get_satd(
+              &plane_org,
+              &plane_after_prediction_region,
+              IMPORTANCE_BLOCK_SIZE,
+              IMPORTANCE_BLOCK_SIZE,
+              bit_depth,
+            )
+          })
+          .min()
+          .unwrap();
 
         fi.lookahead_intra_costs[y * fi.w_in_imp_b + x] = intra_cost;
       }
