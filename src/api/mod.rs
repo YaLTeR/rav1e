@@ -458,7 +458,7 @@ impl SpeedSettings {
   }
 
   fn quantizer_rdo_preset(speed: usize) -> bool {
-    speed <= 2
+    true
   }
 
   fn use_satd_subpel(speed: usize) -> bool {
