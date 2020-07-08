@@ -700,7 +700,7 @@ fn chroma_offset(
 impl QuantizerParameters {
   fn new_from_log_q(
     log_base_q: i64, log_target_q: i64, bit_depth: usize,
-    chroma_sampling: ChromaSampling,
+    chroma_sampling: ChromaSampling, dc_qi_delta: i8, uv_dc_qi_delta: i8,
   ) -> QuantizerParameters {
     let scale = q57(QSCALE + bit_depth as i32 - 8);
     let quantizer = bexp64(log_target_q + scale);
@@ -721,9 +721,20 @@ impl QuantizerParameters {
       log_target_q,
       // TODO: Allow lossless mode; i.e. qi == 0.
       dc_qi: [
-        select_dc_qi(quantizer, bit_depth).max(1),
-        if mono { 0 } else { select_dc_qi(quantizer_u, bit_depth).max(1) },
-        if mono { 0 } else { select_dc_qi(quantizer_v, bit_depth).max(1) },
+        (select_dc_qi(quantizer, bit_depth) as i16 + dc_qi_delta as i16).max(1)
+          as u8,
+        if mono {
+          0
+        } else {
+          (select_dc_qi(quantizer_u, bit_depth) as i16 + uv_dc_qi_delta as i16)
+            .max(1) as u8
+        },
+        if mono {
+          0
+        } else {
+          (select_dc_qi(quantizer_v, bit_depth) as i16 + uv_dc_qi_delta as i16)
+            .max(1) as u8
+        },
       ],
       ac_qi: [
         select_ac_qi(quantizer, bit_depth).max(1),
@@ -884,6 +895,8 @@ impl RCState {
       log_q,
       bit_depth,
       chroma_sampling,
+      0,
+      0,
     )
   }
 
@@ -921,6 +934,28 @@ impl RCState {
         log_q,
         bit_depth,
         chroma_sampling,
+        {
+          let frame_data = ctx.frame_data.get(&output_frameno).unwrap();
+          let m = frame_data.fi.width.min(frame_data.fi.height);
+          if m < 360 {
+            -7
+          } else if m < 720 {
+            -5 - 2
+          } else {
+            -4 - 4
+          }
+        },
+        {
+          let frame_data = ctx.frame_data.get(&output_frameno).unwrap();
+          let m = frame_data.fi.width.min(frame_data.fi.height);
+          if m < 360 {
+            -6
+          } else if m < 720 {
+            -4 - 1
+          } else {
+            -3 - 2
+          }
+        },
       )
     } else {
       let mut nframes: [i32; FRAME_NSUBTYPES + 1] = [0; FRAME_NSUBTYPES + 1];
@@ -1205,6 +1240,8 @@ impl RCState {
         log_q,
         bit_depth,
         chroma_sampling,
+        0,
+        0,
       )
     }
   }

@@ -226,7 +226,7 @@ pub(crate) struct ContextInner<T: Pixel> {
   /// Maps *input_frameno* to frames
   pub(super) frame_q: BTreeMap<u64, Option<Arc<Frame<T>>>>, //    packet_q: VecDeque<Packet>
   /// Maps *output_frameno* to frame data
-  pub(super) frame_data: BTreeMap<u64, FrameData<T>>,
+  pub frame_data: BTreeMap<u64, FrameData<T>>,
   /// A list of the input_frameno for keyframes in this encode.
   /// Needed so that we don't need to keep all of the frame_invariants in
   ///  memory for the whole life of the encode.
