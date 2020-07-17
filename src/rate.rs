@@ -726,13 +726,16 @@ impl QuantizerParameters {
 
     // dc qi delta
     let ac_qi_for_dc_y = (base_q_idx as i16 + dc_y_qi_delta).max(1).min(255);
-    let ac_qi_for_dc_uv = (base_q_idx as i16 + dc_uv_qi_delta).max(1).min(255);
+    let ac_qi_for_dc_u = (select_ac_qi(quantizer_u, bit_depth) as i16 + dc_uv_qi_delta).max(1).min(255);
+    let ac_qi_for_dc_v = (select_ac_qi(quantizer_v, bit_depth) as i16 + dc_uv_qi_delta).max(1).min(255);
 
     let ac_q_for_dc_y = ac_q(ac_qi_for_dc_y as u8, 0, bit_depth) as i64;
-    let ac_q_for_dc_uv = ac_q(ac_qi_for_dc_uv as u8, 0, bit_depth) as i64;
+    let ac_q_for_dc_u = ac_q(ac_qi_for_dc_u as u8, 0, bit_depth) as i64;
+    let ac_q_for_dc_v = ac_q(ac_qi_for_dc_v as u8, 0, bit_depth) as i64;
 
     let dc_qi_y = clamp_qi(select_dc_qi(ac_q_for_dc_y, bit_depth));
-    let dc_qi_uv = clamp_qi(select_dc_qi(ac_q_for_dc_uv, bit_depth));
+    let dc_qi_u = clamp_qi(select_dc_qi(ac_q_for_dc_u, bit_depth));
+    let dc_qi_v = clamp_qi(select_dc_qi(ac_q_for_dc_v, bit_depth));
 
     QuantizerParameters {
       log_base_q,
@@ -740,8 +743,8 @@ impl QuantizerParameters {
       // TODO: Allow lossless mode; i.e. qi == 0.
       dc_qi: [
         dc_qi_y,
-        if mono { 0 } else { dc_qi_uv },
-        if mono { 0 } else { dc_qi_uv },
+        if mono { 0 } else { dc_qi_u },
+        if mono { 0 } else { dc_qi_v },
       ],
       ac_qi: [
         base_q_idx,
