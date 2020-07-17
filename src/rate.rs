@@ -700,7 +700,7 @@ fn chroma_offset(
 impl QuantizerParameters {
   fn new_from_log_q(
     log_base_q: i64, log_target_q: i64, bit_depth: usize,
-    chroma_sampling: ChromaSampling,
+    chroma_sampling: ChromaSampling, dc_y_qi_delta: i16, dc_uv_qi_delta: i16,
   ) -> QuantizerParameters {
     let scale = q57(QSCALE + bit_depth as i32 - 8);
     let quantizer = bexp64(log_target_q + scale);
@@ -724,14 +724,24 @@ impl QuantizerParameters {
     let max_qi = base_q_idx.saturating_add(63).min(255);
     let clamp_qi = |qi: u8| qi.max(min_qi).min(max_qi);
 
+    // dc qi delta
+    let ac_qi_for_dc_y = (base_q_idx as i16 + dc_y_qi_delta).max(1).min(255);
+    let ac_qi_for_dc_uv = (base_q_idx as i16 + dc_uv_qi_delta).max(1).min(255);
+
+    let ac_q_for_dc_y = ac_q(ac_qi_for_dc_y as u8, 0, bit_depth) as i64;
+    let ac_q_for_dc_uv = ac_q(ac_qi_for_dc_uv as u8, 0, bit_depth) as i64;
+
+    let dc_qi_y = clamp_qi(select_dc_qi(ac_q_for_dc_y, bit_depth));
+    let dc_qi_uv = clamp_qi(select_dc_qi(ac_q_for_dc_uv, bit_depth));
+
     QuantizerParameters {
       log_base_q,
       log_target_q,
       // TODO: Allow lossless mode; i.e. qi == 0.
       dc_qi: [
-        clamp_qi(select_dc_qi(quantizer, bit_depth)),
-        if mono { 0 } else { clamp_qi(select_dc_qi(quantizer_u, bit_depth)) },
-        if mono { 0 } else { clamp_qi(select_dc_qi(quantizer_v, bit_depth)) },
+        dc_qi_y,
+        if mono { 0 } else { dc_qi_uv },
+        if mono { 0 } else { dc_qi_uv },
       ],
       ac_qi: [
         base_q_idx,
@@ -892,6 +902,8 @@ impl RCState {
       log_q,
       bit_depth,
       chroma_sampling,
+      todo!(),
+      todo!(),
     )
   }
 
@@ -913,14 +925,28 @@ impl RCState {
       // We use the AC quantizer as the source quantizer since its quantizer
       //  tables have unique entries, while the DC tables do not.
       let ac_quantizer = ac_q(base_qi as u8, 0, bit_depth) as i64;
-      // Pick the nearest DC entry since an exact match may be unavailable.
-      let dc_qi = select_dc_qi(ac_quantizer, bit_depth);
-      let dc_quantizer = dc_q(dc_qi as u8, 0, bit_depth) as i64;
-      // Get the log quantizers as Q57.
+
+      let frame_data = ctx.frame_data.get(&output_frameno).unwrap();
+      let m = frame_data.fi.width.min(frame_data.fi.height);
+      let (dc_y_qi_delta, dc_uv_qi_delta) = if m < 360 {
+        (-7, -6)
+      } else if m < 720 {
+        if fti == FRAME_SUBTYPE_I {
+          (-7, -5)
+        } else {
+          (-5, -4)
+        }
+      } else {
+        if fti == FRAME_SUBTYPE_I {
+          (-8, -5)
+        } else {
+          (-4, -3)
+        }
+      };
+
+      // Get the log quantizer as Q57.
       let log_ac_q = blog64(ac_quantizer) - q57(QSCALE + bit_depth as i32 - 8);
-      let log_dc_q = blog64(dc_quantizer) - q57(QSCALE + bit_depth as i32 - 8);
-      // Target the midpoint of the chosen entries.
-      let log_base_q = (log_ac_q + log_dc_q + 1) >> 1;
+      let log_base_q = log_ac_q;
       // Adjust the quantizer for the frame type, result is Q57:
       let log_q = ((log_base_q + (1i64 << 11)) >> 12) * (MQP_Q12[fti] as i64)
         + DQP_Q57[fti];
@@ -929,6 +955,8 @@ impl RCState {
         log_q,
         bit_depth,
         chroma_sampling,
+        dc_y_qi_delta,
+        dc_uv_qi_delta,
       )
     } else {
       let mut nframes: [i32; FRAME_NSUBTYPES + 1] = [0; FRAME_NSUBTYPES + 1];
@@ -1213,6 +1241,8 @@ impl RCState {
         log_q,
         bit_depth,
         chroma_sampling,
+        todo!(),
+        todo!(),
       )
     }
   }
