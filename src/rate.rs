@@ -700,7 +700,7 @@ fn chroma_offset(
 impl QuantizerParameters {
   fn new_from_log_q(
     log_base_q: i64, log_target_q: i64, bit_depth: usize,
-    chroma_sampling: ChromaSampling,
+    chroma_sampling: ChromaSampling, is_intra: bool,
   ) -> QuantizerParameters {
     let scale = q57(QSCALE + bit_depth as i32 - 8);
     let quantizer = bexp64(log_target_q + scale);
@@ -712,12 +712,38 @@ impl QuantizerParameters {
     let quantizer_v = bexp64(log_target_q_v + scale);
     let lambda = (::std::f64::consts::LN_2 / 6.0)
       * ((log_target_q as f64) * Q57_SQUARE_EXP_SCALE).exp();
-    let lambda_u = (::std::f64::consts::LN_2 / 6.0)
+    let mut lambda_u = (::std::f64::consts::LN_2 / 6.0)
       * ((log_target_q_u as f64) * Q57_SQUARE_EXP_SCALE).exp();
-    let lambda_v = (::std::f64::consts::LN_2 / 6.0)
+    let mut lambda_v = (::std::f64::consts::LN_2 / 6.0)
       * ((log_target_q_v as f64) * Q57_SQUARE_EXP_SCALE).exp();
 
-    let base_q_idx = select_ac_qi(quantizer, bit_depth).max(1);
+    let mut quantizer_y_dc = quantizer;
+    let mut quantizer_y_ac = quantizer;
+    let mut quantizer_u_dc = quantizer_u;
+    let mut quantizer_u_ac = quantizer_u;
+    let mut quantizer_v_dc = quantizer_v;
+    let mut quantizer_v_ac = quantizer_v;
+
+    if !is_intra && bit_depth == 8 && chroma_sampling == ChromaSampling::Cs420 {
+      let log_q_bar = (log_target_q + scale) as f64 * (std::f64::consts::LN_2 / (1i64 << 57) as f64);
+      // println!("q_bar = {}, q_y_ac = {}", log_q_bar.exp().round(), ac_q(select_ac_qi(quantizer_y_ac, bit_depth).max(1), 0, bit_depth));
+
+      // println!("before quantizer_y_dc = {}, quantizer_y_ac = {}", quantizer_y_dc, quantizer_y_ac);
+
+quantizer_y_dc = (-0.11656242387547344 + 1.0331807205305543 * log_q_bar).exp().round() as i64;
+quantizer_y_ac = (-0.11692591176935974 + 1.033087726384096 * log_q_bar).exp().round() as i64;
+quantizer_u_dc = (1.0204689822943789 + 0.7598630717649668 * log_q_bar).exp().round() as i64;
+quantizer_u_ac = (1.0198189027518891 + 0.7599926596666513 * log_q_bar).exp().round() as i64;
+quantizer_v_dc = (0.6886094438200243 + 0.7591572564919543 * log_q_bar).exp().round() as i64;
+quantizer_v_ac = (0.6890266761982824 + 0.7590002362509559 * log_q_bar).exp().round() as i64;
+
+      // println!("after  quantizer_y_dc = {}, quantizer_y_ac = {}", quantizer_y_dc, quantizer_y_ac);
+
+      lambda_u = lambda;
+      lambda_v = lambda;
+    }
+
+    let base_q_idx = select_ac_qi(quantizer_y_ac, bit_depth).max(1);
 
     // delta_q only gets 6 bits + a sign bit, so it can differ by 63 at most.
     let min_qi = base_q_idx.saturating_sub(63).max(1);
@@ -729,14 +755,14 @@ impl QuantizerParameters {
       log_target_q,
       // TODO: Allow lossless mode; i.e. qi == 0.
       dc_qi: [
-        clamp_qi(select_dc_qi(quantizer, bit_depth)),
-        if mono { 0 } else { clamp_qi(select_dc_qi(quantizer_u, bit_depth)) },
-        if mono { 0 } else { clamp_qi(select_dc_qi(quantizer_v, bit_depth)) },
+        clamp_qi(select_dc_qi(quantizer_y_dc, bit_depth)),
+        if mono { 0 } else { clamp_qi(select_dc_qi(quantizer_u_dc, bit_depth)) },
+        if mono { 0 } else { clamp_qi(select_dc_qi(quantizer_v_dc, bit_depth)) },
       ],
       ac_qi: [
         base_q_idx,
-        if mono { 0 } else { clamp_qi(select_ac_qi(quantizer_u, bit_depth)) },
-        if mono { 0 } else { clamp_qi(select_ac_qi(quantizer_v, bit_depth)) },
+        if mono { 0 } else { clamp_qi(select_ac_qi(quantizer_u_ac, bit_depth)) },
+        if mono { 0 } else { clamp_qi(select_ac_qi(quantizer_v_ac, bit_depth)) },
       ],
       lambda,
       dist_scale: [1.0, lambda / lambda_u, lambda / lambda_v],
@@ -892,6 +918,7 @@ impl RCState {
       log_q,
       bit_depth,
       chroma_sampling,
+      fti == 0,
     )
   }
 
@@ -929,6 +956,7 @@ impl RCState {
         log_q,
         bit_depth,
         chroma_sampling,
+        fti == 0,
       )
     } else {
       let mut nframes: [i32; FRAME_NSUBTYPES + 1] = [0; FRAME_NSUBTYPES + 1];
@@ -1213,6 +1241,7 @@ impl RCState {
         log_q,
         bit_depth,
         chroma_sampling,
+        fti == 0,
       )
     }
   }
