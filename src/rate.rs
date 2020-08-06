@@ -739,11 +739,6 @@ impl QuantizerParameters {
           quantizer_u_ac = (1.0198189027518891 + 0.7599926596666513 * log_q_bar).exp().round() as i64;
           quantizer_v_dc = (0.6886094438200243 + 0.7591572564919543 * log_q_bar).exp().round() as i64;
           quantizer_v_ac = (0.6890266761982824 + 0.7590002362509559 * log_q_bar).exp().round() as i64;
-
-          let q_bar = log_q_bar.exp();
-          y_dist_scale = (q_bar / ((quantizer_y_ac + quantizer_y_dc) as f64 / 2.)).powi(2);
-          lambda_u = lambda / ((q_bar / ((quantizer_u_ac + quantizer_u_dc) as f64 / 2.)).powi(2));
-          lambda_v = lambda / ((q_bar / ((quantizer_v_ac + quantizer_v_dc) as f64 / 2.)).powi(2));
         },
         ChromaSampling::Cs422 => {
           quantizer_y_dc = (-0.14394892466839426 + 1.0332396344168826 * log_q_bar).exp().round() as i64;
@@ -765,6 +760,11 @@ impl QuantizerParameters {
       }
 
       // println!("after  quantizer_y_dc = {}, quantizer_y_ac = {}", quantizer_y_dc, quantizer_y_ac);
+
+      let q_bar = log_q_bar.exp();
+      y_dist_scale = (q_bar / ((quantizer_y_ac + quantizer_y_dc) as f64 / 2.)).powi(2);
+      lambda_u = lambda / ((q_bar / ((quantizer_u_ac + quantizer_u_dc) as f64 / 2.)).powi(2));
+      lambda_v = lambda / ((q_bar / ((quantizer_v_ac + quantizer_v_dc) as f64 / 2.)).powi(2));
     }
 
     let base_q_idx = select_ac_qi(quantizer_y_ac, bit_depth).max(1);
