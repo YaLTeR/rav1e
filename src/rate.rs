@@ -762,9 +762,9 @@ impl QuantizerParameters {
       // println!("after  quantizer_y_dc = {}, quantizer_y_ac = {}", quantizer_y_dc, quantizer_y_ac);
 
       let q_bar = log_q_bar.exp();
-      y_dist_scale = (q_bar / ((quantizer_y_ac + quantizer_y_dc) as f64 / 2.)).powi(2);
-      lambda_u = lambda / ((q_bar / ((quantizer_u_ac + quantizer_u_dc) as f64 / 2.)).powi(2));
-      lambda_v = lambda / ((q_bar / ((quantizer_v_ac + quantizer_v_dc) as f64 / 2.)).powi(2));
+      y_dist_scale = (q_bar / quantizer_y_ac as f64).powi(2);
+      lambda_u = lambda / (q_bar / quantizer_u_ac as f64).powi(2);
+      lambda_v = lambda / (q_bar / quantizer_v_ac as f64).powi(2);
     }
 
     let base_q_idx = select_ac_qi(quantizer_y_ac, bit_depth).max(1);
