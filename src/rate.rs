@@ -77,57 +77,6 @@ const DQP_Q57: &[i64; FRAME_NSUBTYPES] = &[
   (2.0 * (33_810_170.0 / 86_043_287.0) * (1i64 << 57) as f64) as i64,
 ];
 
-// For 8-bit-depth inter frames, 6 quantizers are derived from log_target_q
-//  with linear models: log_q_i = ADD + MUL * log_target_q.
-// Derivation of the linear models:
-//  https://github.com/YaLTeR/rav1e/blob/8e4095dbe40a66c41a140577ba3c6d6f7b1427d8/tools/analyse-vstats.ipynb
-const Q_MODEL_ADD: [[[f64; 3]; 2]; 3] = [
-  // 4:2:0
-  [
-    // DC
-    [-0.11656242387547344, 1.0204689822943789, 0.6886094438200243],
-    // AC
-    [-0.11692591176935974, 1.0198189027518891, 0.6890266761982824],
-  ],
-  // 4:2:2
-  [
-    // DC
-    [-0.14394892466839426, 0.8159473007572995, 0.47871627350291224],
-    // AC
-    [-0.1443099499314302, 0.8143304669365223, 0.47843462255605296],
-  ],
-  // 4:4:4
-  [
-    // DC
-    [-0.22649962259502487, 0.5656726799733809, 0.22305586707855252],
-    // AC
-    [-0.22684363329351775, 0.5635050277164071, 0.22268207844634347],
-  ],
-];
-const Q_MODEL_MUL: [[[f64; 3]; 2]; 3] = [
-  // 4:2:0
-  [
-    // DC
-    [1.0331807205305543, 0.7598630717649668, 0.7591572564919543],
-    // AC
-    [1.033087726384096, 0.7599926596666513, 0.7590002362509559],
-  ],
-  // 4:2:2
-  [
-    // DC
-    [1.0332396344168826, 0.8475784581494014, 0.8476834789229545],
-    // AC
-    [1.0331466354360417, 0.8478359280824787, 0.8477755000169171],
-  ],
-  // 4:4:4
-  [
-    // DC
-    [1.0349179342200239, 0.9325424234409672, 0.9338268588837543],
-    // AC
-    [1.0348229113515812, 0.9328981675015446, 0.9337797953308268],
-  ],
-];
-
 // Convert an integer into a Q57 fixed-point fraction.
 // The integer must be in the range -64 to 63, inclusive.
 pub(crate) const fn q57(v: i32) -> i64 {
@@ -757,48 +706,53 @@ impl QuantizerParameters {
     chroma_sampling: ChromaSampling, is_intra: bool,
   ) -> QuantizerParameters {
     let scale = q57(QSCALE + bit_depth as i32 - 8);
-    let quantizer = bexp64(log_target_q + scale);
-    let (offset_u, offset_v) = chroma_offset(log_target_q, chroma_sampling);
-    let mono = chroma_sampling == ChromaSampling::Cs400;
-    let log_target_q_u = log_target_q + offset_u;
-    let log_target_q_v = log_target_q + offset_v;
-    let quantizer_u = bexp64(log_target_q_u + scale);
-    let quantizer_v = bexp64(log_target_q_v + scale);
-    let lambda = (::std::f64::consts::LN_2 / 6.0)
-      * ((log_target_q as f64) * Q57_SQUARE_EXP_SCALE).exp();
-    let lambda_u = (::std::f64::consts::LN_2 / 6.0)
-      * ((log_target_q_u as f64) * Q57_SQUARE_EXP_SCALE).exp();
-    let lambda_v = (::std::f64::consts::LN_2 / 6.0)
-      * ((log_target_q_v as f64) * Q57_SQUARE_EXP_SCALE).exp();
 
-    let mut dc_q = [quantizer, quantizer_u, quantizer_v];
-    let mut ac_q = dc_q;
-    let mut dist_scale = [1.0, lambda / lambda_u, lambda / lambda_v];
-
-    // Under correct conditions, derive quantizers using the linear models.
+    let mut log_q_y = log_target_q;
     if !is_intra && bit_depth == 8 && chroma_sampling != ChromaSampling::Cs400
     {
-      let log_q_bar = (log_target_q + scale) as f64
-        * (std::f64::consts::LN_2 / (1i64 << 57) as f64);
-      let q_bar = log_q_bar.exp();
-
-      let add = Q_MODEL_ADD[chroma_sampling as usize];
-      let mul = Q_MODEL_MUL[chroma_sampling as usize];
-      let quantizer = [&mut dc_q, &mut ac_q];
-
-      for plane in 0..3 {
-        for q_type in 0..2 {
-          let q = add[q_type][plane] + mul[q_type][plane] * log_q_bar;
-          quantizer[q_type][plane] = q.exp().round() as i64;
+      match chroma_sampling {
+        ChromaSampling::Cs420 => {
+          log_q_y = (1.0336962260323812 * log_target_q as f64).round() as i64
+            - 0x24_4FE7_ECB3_DD90
         }
-      }
-
-      for plane in 0..3 {
-        dist_scale[plane] = (q_bar / ac_q[plane] as f64).powi(2);
+        ChromaSampling::Cs422 => {
+          log_q_y = (1.0333169937188251 * log_target_q as f64).round() as i64
+            - 0x37_41DA_38AD_0924
+        }
+        ChromaSampling::Cs444 => {
+          log_q_y = (1.0344948215612353 * log_target_q as f64).round() as i64
+            - 0x70_83BD_A626_311C
+        }
+        _ => unreachable!(),
       }
     }
 
-    let base_q_idx = select_ac_qi(ac_q[0], bit_depth).max(1);
+    let quantizer = bexp64(log_q_y + scale);
+    let (offset_u, offset_v) = chroma_offset(log_q_y, chroma_sampling);
+    let mono = chroma_sampling == ChromaSampling::Cs400;
+    let log_q_u = log_q_y + offset_u;
+    let log_q_v = log_q_y + offset_v;
+    let quantizer_u = bexp64(log_q_u + scale);
+    let quantizer_v = bexp64(log_q_v + scale);
+    let lambda = (::std::f64::consts::LN_2 / 6.0)
+      * ((log_target_q as f64) * Q57_SQUARE_EXP_SCALE).exp();
+    let lambda_u = (::std::f64::consts::LN_2 / 6.0)
+      * ((log_q_u as f64) * Q57_SQUARE_EXP_SCALE).exp();
+    let lambda_v = (::std::f64::consts::LN_2 / 6.0)
+      * ((log_q_v as f64) * Q57_SQUARE_EXP_SCALE).exp();
+
+    let mut dist_scale = [1.0, lambda / lambda_u, lambda / lambda_v];
+
+    if !is_intra && bit_depth == 8 && chroma_sampling != ChromaSampling::Cs400
+    {
+      let log_q = [log_q_y, log_q_u, log_q_v];
+      for plane in 0..3 {
+        dist_scale[plane] =
+          bexp64((log_target_q - log_q[plane]) * 2 + q57(16)) as f64 / 65536.;
+      }
+    }
+
+    let base_q_idx = select_ac_qi(quantizer, bit_depth).max(1);
 
     // delta_q only gets 6 bits + a sign bit, so it can differ by 63 at most.
     let min_qi = base_q_idx.saturating_sub(63).max(1);
@@ -810,14 +764,14 @@ impl QuantizerParameters {
       log_target_q,
       // TODO: Allow lossless mode; i.e. qi == 0.
       dc_qi: [
-        clamp_qi(select_dc_qi(dc_q[0], bit_depth)),
-        if mono { 0 } else { clamp_qi(select_dc_qi(dc_q[1], bit_depth)) },
-        if mono { 0 } else { clamp_qi(select_dc_qi(dc_q[2], bit_depth)) },
+        clamp_qi(select_dc_qi(quantizer, bit_depth)),
+        if mono { 0 } else { clamp_qi(select_dc_qi(quantizer_u, bit_depth)) },
+        if mono { 0 } else { clamp_qi(select_dc_qi(quantizer_v, bit_depth)) },
       ],
       ac_qi: [
         base_q_idx,
-        if mono { 0 } else { clamp_qi(select_ac_qi(ac_q[1], bit_depth)) },
-        if mono { 0 } else { clamp_qi(select_ac_qi(ac_q[2], bit_depth)) },
+        if mono { 0 } else { clamp_qi(select_ac_qi(quantizer_u, bit_depth)) },
+        if mono { 0 } else { clamp_qi(select_ac_qi(quantizer_v, bit_depth)) },
       ],
       lambda,
       dist_scale,
