@@ -712,15 +712,15 @@ impl QuantizerParameters {
     {
       match chroma_sampling {
         ChromaSampling::Cs420 => {
-          log_q_y = (1.0336962260323812 * log_target_q as f64).round() as i64
+          log_q_y = log_target_q + (log_target_q >> 32) * 0x8A0_50DD
             - 0x24_4FE7_ECB3_DD90
         }
         ChromaSampling::Cs422 => {
-          log_q_y = (1.0333169937188251 * log_target_q as f64).round() as i64
+          log_q_y = log_target_q + (log_target_q >> 32) * 0x887_7666
             - 0x37_41DA_38AD_0924
         }
         ChromaSampling::Cs444 => {
-          log_q_y = (1.0344948215612353 * log_target_q as f64).round() as i64
+          log_q_y = log_target_q + (log_target_q >> 32) * 0x8D4_A712
             - 0x70_83BD_A626_311C
         }
         _ => unreachable!(),
