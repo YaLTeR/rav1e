@@ -732,6 +732,7 @@ impl QuantizerParameters {
   fn new_from_log_q(
     log_base_q: i64, log_target_q: i64, bit_depth: usize,
     chroma_sampling: ChromaSampling, is_intra: bool,
+    dc_y_qi_delta: i16, dc_uv_qi_delta: i16,
   ) -> QuantizerParameters {
     let scale = q57(QSCALE + bit_depth as i32 - 8);
 
@@ -762,14 +763,27 @@ impl QuantizerParameters {
     let max_qi = base_q_idx.saturating_add(63).min(255);
     let clamp_qi = |qi: u8| qi.max(min_qi).min(max_qi);
 
+    // dc qi delta
+    let ac_qi_for_dc_y = (base_q_idx as i16 + dc_y_qi_delta).max(1).min(255);
+    let ac_qi_for_dc_u = (select_ac_qi(quantizer_u, bit_depth) as i16 + dc_uv_qi_delta).max(1).min(255);
+    let ac_qi_for_dc_v = (select_ac_qi(quantizer_v, bit_depth) as i16 + dc_uv_qi_delta).max(1).min(255);
+
+    let ac_q_for_dc_y = ac_q(ac_qi_for_dc_y as u8, 0, bit_depth) as i64;
+    let ac_q_for_dc_u = ac_q(ac_qi_for_dc_u as u8, 0, bit_depth) as i64;
+    let ac_q_for_dc_v = ac_q(ac_qi_for_dc_v as u8, 0, bit_depth) as i64;
+
+    let dc_qi_y = clamp_qi(select_dc_qi(ac_q_for_dc_y, bit_depth));
+    let dc_qi_u = clamp_qi(select_dc_qi(ac_q_for_dc_u, bit_depth));
+    let dc_qi_v = clamp_qi(select_dc_qi(ac_q_for_dc_v, bit_depth));
+
     QuantizerParameters {
       log_base_q,
       log_target_q,
       // TODO: Allow lossless mode; i.e. qi == 0.
       dc_qi: [
-        clamp_qi(select_dc_qi(quantizer, bit_depth)),
-        if mono { 0 } else { clamp_qi(select_dc_qi(quantizer_u, bit_depth)) },
-        if mono { 0 } else { clamp_qi(select_dc_qi(quantizer_v, bit_depth)) },
+        dc_qi_y,
+        if mono { 0 } else { dc_qi_u },
+        if mono { 0 } else { dc_qi_v },
       ],
       ac_qi: [
         base_q_idx,
@@ -931,6 +945,8 @@ impl RCState {
       bit_depth,
       chroma_sampling,
       fti == 0,
+      todo!(),
+      todo!(),
     )
   }
 
@@ -963,12 +979,33 @@ impl RCState {
       // Adjust the quantizer for the frame type, result is Q57:
       let log_q = ((log_base_q + (1i64 << 11)) >> 12) * (MQP_Q12[fti] as i64)
         + DQP_Q57[fti];
+
+      let frame_data = ctx.frame_data.get(&output_frameno).unwrap();
+      let m = frame_data.fi.width.min(frame_data.fi.height);
+      let (dc_y_qi_delta, dc_uv_qi_delta) = if m < 360 {
+        (-7, -6)
+      } else if m < 720 {
+        if fti == FRAME_SUBTYPE_I {
+          (-7, -5)
+        } else {
+          (-5, -4)
+        }
+      } else {
+        if fti == FRAME_SUBTYPE_I {
+          (-8, -5)
+        } else {
+          (-4, -3)
+        }
+      };
+
       QuantizerParameters::new_from_log_q(
         log_base_q,
         log_q,
         bit_depth,
         chroma_sampling,
         fti == 0,
+        dc_y_qi_delta,
+        dc_uv_qi_delta,
       )
     } else {
       let mut nframes: [i32; FRAME_NSUBTYPES + 1] = [0; FRAME_NSUBTYPES + 1];
@@ -1254,6 +1291,8 @@ impl RCState {
         bit_depth,
         chroma_sampling,
         fti == 0,
+        todo!(),
+        todo!(),
       )
     }
   }
