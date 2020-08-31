@@ -756,39 +756,60 @@ impl QuantizerParameters {
     let scale = |q| bexp64((log_target_q - q) * 2 + q57(16)) as f64 / 65536.;
     let dist_scale = [scale(log_q_y), scale(log_q_u), scale(log_q_v)];
 
-    let base_q_idx = select_ac_qi(quantizer, bit_depth).max(1);
+    // dc qi delta
+    let mut ac_qu = [quantizer, quantizer_u, quantizer_v];
+    let mut dc_qu = [quantizer, quantizer_u, quantizer_v];
+
+    if !is_intra && bit_depth == 8 && chroma_sampling == ChromaSampling::Cs420 {
+      const WEIGHTS: [f64; 3] = [0.9995706403792515, 0.9967438317403726, 0.997256598841512];
+
+      let avg_q = [quantizer, quantizer_u, quantizer_v];
+
+      let ac_qi_for_dc_y = (select_ac_qi(ac_qu[0], bit_depth) as i16 + dc_y_qi_delta).max(1).min(255);
+      let ac_qi_for_dc_u = (select_ac_qi(ac_qu[1], bit_depth) as i16 + dc_uv_qi_delta).max(1).min(255);
+      let ac_qi_for_dc_v = (select_ac_qi(ac_qu[2], bit_depth) as i16 + dc_uv_qi_delta).max(1).min(255);
+
+      let ac_q_for_dc_y = ac_q(ac_qi_for_dc_y as u8, 0, bit_depth) as i64;
+      let ac_q_for_dc_u = ac_q(ac_qi_for_dc_u as u8, 0, bit_depth) as i64;
+      let ac_q_for_dc_v = ac_q(ac_qi_for_dc_v as u8, 0, bit_depth) as i64;
+
+      dc_qu = [ac_q_for_dc_y, ac_q_for_dc_u, ac_q_for_dc_v];
+
+      // let qu = |p| {
+      //   let w = WEIGHTS[p];
+      //   let q_bar: i64 = avg_q[p];
+      //   let dc_qu: i64 = dc_qu[p];
+      //
+      //   let ac_qu_sq: f64 = w / (1. / (q_bar.pow(2) as f64) - (1. - w) / (dc_qu.pow(2) as f64));
+      //   println!("{}", ac_qu_sq.sqrt());
+      //   ac_qu_sq.sqrt() as i64
+      // };
+      // ac_qu = [qu(0), qu(1), qu(2)];
+      ac_qu = [ac_qu[0] + 1, ac_qu[1] + 1, ac_qu[2] + 1];
+
+      // println!("{} -> {}, {} -> {}, {} -> {}", quantizer, ac_qu[0], quantizer_u, ac_qu[1], quantizer_v, ac_qu[2]);
+    }
+
+    let base_q_idx = select_ac_qi(ac_qu[0], bit_depth).max(1);
 
     // delta_q only gets 6 bits + a sign bit, so it can differ by 63 at most.
     let min_qi = base_q_idx.saturating_sub(63).max(1);
     let max_qi = base_q_idx.saturating_add(63).min(255);
     let clamp_qi = |qi: u8| qi.max(min_qi).min(max_qi);
 
-    // dc qi delta
-    let ac_qi_for_dc_y = (base_q_idx as i16 + dc_y_qi_delta).max(1).min(255);
-    let ac_qi_for_dc_u = (select_ac_qi(quantizer_u, bit_depth) as i16 + dc_uv_qi_delta).max(1).min(255);
-    let ac_qi_for_dc_v = (select_ac_qi(quantizer_v, bit_depth) as i16 + dc_uv_qi_delta).max(1).min(255);
-
-    let ac_q_for_dc_y = ac_q(ac_qi_for_dc_y as u8, 0, bit_depth) as i64;
-    let ac_q_for_dc_u = ac_q(ac_qi_for_dc_u as u8, 0, bit_depth) as i64;
-    let ac_q_for_dc_v = ac_q(ac_qi_for_dc_v as u8, 0, bit_depth) as i64;
-
-    let dc_qi_y = clamp_qi(select_dc_qi(ac_q_for_dc_y, bit_depth));
-    let dc_qi_u = clamp_qi(select_dc_qi(ac_q_for_dc_u, bit_depth));
-    let dc_qi_v = clamp_qi(select_dc_qi(ac_q_for_dc_v, bit_depth));
-
     QuantizerParameters {
       log_base_q,
       log_target_q,
       // TODO: Allow lossless mode; i.e. qi == 0.
       dc_qi: [
-        dc_qi_y,
-        if mono { 0 } else { dc_qi_u },
-        if mono { 0 } else { dc_qi_v },
+        clamp_qi(select_dc_qi(dc_qu[0], bit_depth)),
+        if mono { 0 } else { clamp_qi(select_dc_qi(dc_qu[1], bit_depth)) },
+        if mono { 0 } else { clamp_qi(select_dc_qi(dc_qu[2], bit_depth)) },
       ],
       ac_qi: [
         base_q_idx,
-        if mono { 0 } else { clamp_qi(select_ac_qi(quantizer_u, bit_depth)) },
-        if mono { 0 } else { clamp_qi(select_ac_qi(quantizer_v, bit_depth)) },
+        if mono { 0 } else { clamp_qi(select_ac_qi(ac_qu[1], bit_depth)) },
+        if mono { 0 } else { clamp_qi(select_ac_qi(ac_qu[2], bit_depth)) },
       ],
       lambda,
       dist_scale,
