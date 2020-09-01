@@ -764,15 +764,15 @@ impl QuantizerParameters {
         0.027048341698702443, 6.657022715064497e-05,
       ];
 
-      let ac_qi_for_dc_y = (select_ac_qi(ac_qu[0], bit_depth) as i16 + dc_y_qi_delta).max(1).min(255);
-      let ac_qi_for_dc_u = (select_ac_qi(ac_qu[1], bit_depth) as i16 + dc_uv_qi_delta).max(1).min(255);
-      let ac_qi_for_dc_v = (select_ac_qi(ac_qu[2], bit_depth) as i16 + dc_uv_qi_delta).max(1).min(255);
-
-      let ac_q_for_dc_y = ac_q(ac_qi_for_dc_y as u8, 0, bit_depth) as i64;
-      let ac_q_for_dc_u = ac_q(ac_qi_for_dc_u as u8, 0, bit_depth) as i64;
-      let ac_q_for_dc_v = ac_q(ac_qi_for_dc_v as u8, 0, bit_depth) as i64;
-
-      dc_qu = [ac_q_for_dc_y, ac_q_for_dc_u, ac_q_for_dc_v];
+      // let ac_qi_for_dc_y = (select_ac_qi(ac_qu[0], bit_depth) as i16 + dc_y_qi_delta).max(1).min(255);
+      // let ac_qi_for_dc_u = (select_ac_qi(ac_qu[1], bit_depth) as i16 + dc_uv_qi_delta).max(1).min(255);
+      // let ac_qi_for_dc_v = (select_ac_qi(ac_qu[2], bit_depth) as i16 + dc_uv_qi_delta).max(1).min(255);
+      //
+      // let ac_q_for_dc_y = ac_q(ac_qi_for_dc_y as u8, 0, bit_depth) as i64;
+      // let ac_q_for_dc_u = ac_q(ac_qi_for_dc_u as u8, 0, bit_depth) as i64;
+      // let ac_q_for_dc_v = ac_q(ac_qi_for_dc_v as u8, 0, bit_depth) as i64;
+      //
+      // dc_qu = [ac_q_for_dc_y, ac_q_for_dc_u, ac_q_for_dc_v];
 
       // let avg_q = [quantizer, quantizer_u, quantizer_v];
       //
