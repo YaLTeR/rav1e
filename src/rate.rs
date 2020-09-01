@@ -750,20 +750,19 @@ impl QuantizerParameters {
     let log_q_v = log_q_y + offset_v;
     let quantizer_u = bexp64(log_q_u + scale);
     let quantizer_v = bexp64(log_q_v + scale);
-    let lambda = (::std::f64::consts::LN_2 / 6.0)
-      * ((log_target_q as f64) * Q57_SQUARE_EXP_SCALE).exp();
-
-    let scale = |q| bexp64((log_target_q - q) * 2 + q57(16)) as f64 / 65536.;
-    let dist_scale = [scale(log_q_y), scale(log_q_u), scale(log_q_v)];
 
     // dc qi delta
     let mut ac_qu = [quantizer, quantizer_u, quantizer_v];
     let mut dc_qu = [quantizer, quantizer_u, quantizer_v];
 
-    if !is_intra && bit_depth == 8 && chroma_sampling == ChromaSampling::Cs420 {
-      const WEIGHTS: [f64; 3] = [0.9995706403792515, 0.9967438317403726, 0.997256598841512];
+    let mut log_target_q = log_target_q;
 
-      let avg_q = [quantizer, quantizer_u, quantizer_v];
+    if !is_intra && bit_depth == 8 && chroma_sampling == ChromaSampling::Cs420 {
+      const WEIGHTS: [f64; 6] = [
+        0.9177740577391212, 0.0003989600036083831,
+        0.05455165208706425, 0.0001604182443531253,
+        0.027048341698702443, 6.657022715064497e-05,
+      ];
 
       let ac_qi_for_dc_y = (select_ac_qi(ac_qu[0], bit_depth) as i16 + dc_y_qi_delta).max(1).min(255);
       let ac_qi_for_dc_u = (select_ac_qi(ac_qu[1], bit_depth) as i16 + dc_uv_qi_delta).max(1).min(255);
@@ -775,6 +774,8 @@ impl QuantizerParameters {
 
       dc_qu = [ac_q_for_dc_y, ac_q_for_dc_u, ac_q_for_dc_v];
 
+      // let avg_q = [quantizer, quantizer_u, quantizer_v];
+      //
       // let qu = |p| {
       //   let w = WEIGHTS[p];
       //   let q_bar: i64 = avg_q[p];
@@ -785,10 +786,19 @@ impl QuantizerParameters {
       //   ac_qu_sq.sqrt() as i64
       // };
       // ac_qu = [qu(0), qu(1), qu(2)];
-      ac_qu = [ac_qu[0] + 1, ac_qu[1] + 1, ac_qu[2] + 1];
-
       // println!("{} -> {}, {} -> {}, {} -> {}", quantizer, ac_qu[0], quantizer_u, ac_qu[1], quantizer_v, ac_qu[2]);
+
+      let qu = [ac_qu[0], dc_qu[0], ac_qu[1], dc_qu[1], ac_qu[2], dc_qu[2]];
+      let target_q = (1. / qu.iter().zip(WEIGHTS.iter()).map(|(q, w)| w / (q.pow(2) as f64)).sum::<f64>()).sqrt();
+      // println!("{} -> {}", bexp64(log_target_q + scale + q57(16)) as f64 / 65536., target_q);
+      log_target_q = blog64((target_q * 65536.).round() as i64) - q57(16) - scale;
     }
+
+    let lambda = (::std::f64::consts::LN_2 / 6.0)
+      * ((log_target_q as f64) * Q57_SQUARE_EXP_SCALE).exp();
+
+    let scale = |q| bexp64((log_target_q - q) * 2 + q57(16)) as f64 / 65536.;
+    let dist_scale = [scale(log_q_y), scale(log_q_u), scale(log_q_v)];
 
     let base_q_idx = select_ac_qi(ac_qu[0], bit_depth).max(1);
 
