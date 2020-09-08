@@ -757,7 +757,7 @@ impl QuantizerParameters {
 
     // let mut log_target_q = log_target_q;
 
-    if bit_depth == 8 && chroma_sampling == ChromaSampling::Cs420 {
+    if !is_intra && bit_depth == 8 && chroma_sampling == ChromaSampling::Cs420 {
       // const WEIGHTS: [f64; 6] = [
       //   0.9177740577391212, 0.0003989600036083831,
       //   0.05455165208706425, 0.0001604182443531253,
@@ -779,18 +779,24 @@ impl QuantizerParameters {
         qu(ac_qu[2], dc_uv_qi_delta),
       ];
 
-      // let avg_q = [quantizer, quantizer_u, quantizer_v];
-      //
-      // let qu = |p| {
-      //   let w = WEIGHTS[p];
-      //   let q_bar: i64 = avg_q[p];
-      //   let dc_qu: i64 = dc_qu[p];
-      //
-      //   let ac_qu_sq: f64 = w / (1. / (q_bar.pow(2) as f64) - (1. - w) / (dc_qu.pow(2) as f64));
-      //   println!("{}", ac_qu_sq.sqrt());
-      //   ac_qu_sq.sqrt() as i64
-      // };
-      // ac_qu = [qu(0), qu(1), qu(2)];
+      let avg_q = [quantizer, quantizer_u, quantizer_v];
+
+      let qu = |p| {
+        const PER_PLANE_AC_WEIGHTS: [f64; 3] = [
+          0.9995706403792515,
+          0.9967438317403726,
+          0.997256598841512,
+        ];
+
+        let w = PER_PLANE_AC_WEIGHTS[p];
+        let q_bar: i64 = avg_q[p];
+        let dc_qu: i64 = dc_qu[p];
+
+        let ac_qu_sq: f64 = w / (1. / (q_bar.pow(2) as f64) - (1. - w) / (dc_qu.pow(2) as f64));
+        // println!("{}", ac_qu_sq.sqrt());
+        ac_qu_sq.sqrt().round() as i64
+      };
+      ac_qu = [qu(0), qu(1), qu(2)];
       // println!("{} -> {}, {} -> {}, {} -> {}", quantizer, ac_qu[0], quantizer_u, ac_qu[1], quantizer_v, ac_qu[2]);
 
       // let qu = [ac_qu[0], dc_qu[0], ac_qu[1], dc_qu[1], ac_qu[2], dc_qu[2]];
