@@ -757,7 +757,7 @@ impl QuantizerParameters {
 
     // let mut log_target_q = log_target_q;
 
-    if !is_intra && bit_depth == 8 && chroma_sampling == ChromaSampling::Cs420 {
+    if bit_depth == 8 && chroma_sampling == ChromaSampling::Cs420 {
       // const WEIGHTS: [f64; 6] = [
       //   0.9177740577391212, 0.0003989600036083831,
       //   0.05455165208706425, 0.0001604182443531253,
