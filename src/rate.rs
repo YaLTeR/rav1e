@@ -773,7 +773,11 @@ impl QuantizerParameters {
       // let ac_q_for_dc_u = ac_q(ac_qi_for_dc_u as u8, 0, bit_depth) as i64;
       // let ac_q_for_dc_v = ac_q(ac_qi_for_dc_v as u8, 0, bit_depth) as i64;
 
-      let qu = |q, delta| (q * 2f64.powf(delta as f64 / 30.));
+      // let qu = |q, delta| (q * 2f64.powf(delta as f64 / 30.));
+      let qu = |q: f64, delta: i16| {
+        let ac_qi = (select_ac_qi(q.round() as i64, bit_depth) as i16 + delta).max(1).min(255);
+        ac_q(ac_qi as u8, 0, bit_depth) as f64
+      };
       dc_qu = [
         qu(ac_qu[0], dc_y_qi_delta),
         qu(ac_qu[1], dc_uv_qi_delta),
