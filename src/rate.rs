@@ -743,13 +743,14 @@ impl QuantizerParameters {
         + Q_MODEL_ADD[chroma_sampling as usize];
     }
 
-    let quantizer = bexp64(log_q_y + scale);
     let (offset_u, offset_v) = chroma_offset(log_q_y, chroma_sampling);
     let mono = chroma_sampling == ChromaSampling::Cs400;
     let log_q_u = log_q_y + offset_u;
     let log_q_v = log_q_y + offset_v;
-    let quantizer_u = bexp64(log_q_u + scale);
-    let quantizer_v = bexp64(log_q_v + scale);
+
+    let quantizer = bexp64(log_q_y + scale + q57(16)) as f64 / 65536.;
+    let quantizer_u = bexp64(log_q_u + scale + q57(16)) as f64 / 65536.;
+    let quantizer_v = bexp64(log_q_v + scale + q57(16)) as f64 / 65536.;
 
     // dc qi delta
     let mut ac_qu = [quantizer, quantizer_u, quantizer_v];
@@ -772,7 +773,7 @@ impl QuantizerParameters {
       // let ac_q_for_dc_u = ac_q(ac_qi_for_dc_u as u8, 0, bit_depth) as i64;
       // let ac_q_for_dc_v = ac_q(ac_qi_for_dc_v as u8, 0, bit_depth) as i64;
 
-      let qu = |q, delta| (q as f64 * 2f64.powf(delta as f64 / 30.)) as i64;
+      let qu = |q, delta| (q * 2f64.powf(delta as f64 / 30.));
       dc_qu = [
         qu(ac_qu[0], dc_y_qi_delta),
         qu(ac_qu[1], dc_uv_qi_delta),
@@ -789,12 +790,12 @@ impl QuantizerParameters {
         ];
 
         let w = PER_PLANE_AC_WEIGHTS[p];
-        let q_bar: i64 = avg_q[p];
-        let dc_qu: i64 = dc_qu[p];
+        let q_bar: f64 = avg_q[p];
+        let dc_qu: f64 = dc_qu[p];
 
-        let ac_qu_sq: f64 = w / (1. / (q_bar.pow(2) as f64) - (1. - w) / (dc_qu.pow(2) as f64));
+        let ac_qu_sq: f64 = w / (1. / (q_bar.powi(2) as f64) - (1. - w) / (dc_qu.powi(2) as f64));
         // println!("{}", ac_qu_sq.sqrt());
-        ac_qu_sq.sqrt().round() as i64
+        ac_qu_sq.sqrt()
       };
       ac_qu = [qu(0), qu(1), qu(2)];
       // println!("{} -> {}, {} -> {}, {} -> {}", quantizer, ac_qu[0], quantizer_u, ac_qu[1], quantizer_v, ac_qu[2]);
@@ -804,6 +805,10 @@ impl QuantizerParameters {
       // println!("{} -> {}", bexp64(log_target_q + scale + q57(16)) as f64 / 65536., target_q);
       // log_target_q = blog64((target_q * 65536.).round() as i64) - q57(16) - scale;
     }
+
+    let r = |x: f64| x.round() as i64;
+    let ac_qu = [r(ac_qu[0]), r(ac_qu[1]), r(ac_qu[2])];
+    let dc_qu = [r(dc_qu[0]), r(dc_qu[1]), r(dc_qu[2])];
 
     let lambda = (::std::f64::consts::LN_2 / 6.0)
       * ((log_target_q as f64) * Q57_SQUARE_EXP_SCALE).exp();
