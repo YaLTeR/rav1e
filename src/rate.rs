@@ -758,7 +758,7 @@ impl QuantizerParameters {
 
     // let mut log_target_q = log_target_q;
 
-    if !is_intra && bit_depth == 8 && chroma_sampling == ChromaSampling::Cs420 {
+    if bit_depth == 8 && chroma_sampling == ChromaSampling::Cs420 {
       // const WEIGHTS: [f64; 6] = [
       //   0.9177740577391212, 0.0003989600036083831,
       //   0.05455165208706425, 0.0001604182443531253,
@@ -793,7 +793,14 @@ impl QuantizerParameters {
           0.997256598841512,
         ];
 
-        let w = PER_PLANE_AC_WEIGHTS[p];
+        const PER_PLANE_AC_WEIGHTS_INTRA: [f64; 3] = [
+          0.9986856972222258,
+          0.9893096547653344,
+          0.9918775826221204,
+        ];
+
+        let weights = if is_intra { PER_PLANE_AC_WEIGHTS_INTRA } else { PER_PLANE_AC_WEIGHTS };
+        let w = weights[p];
         let q_bar: f64 = avg_q[p];
         let dc_qu: f64 = dc_qu[p];
 
